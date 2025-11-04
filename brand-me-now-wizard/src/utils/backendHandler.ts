@@ -66,10 +66,12 @@ export async function postAgencyRespond(payload: AgencyPayload): Promise<any> {
 export async function streamAgencyRespond(
   payload: AgencyPayload,
   onChunk?: (chunk: AgencyStreamChunk) => void,
+  options?: { stopOnFirstMessage?: boolean },
 ): Promise<{ text: string }> {
   const endpoint = buildEndpoint('/wp-json/agui-chat/v1/agency/stream');
   let aggregate = '';
   let buffer = '';
+  let shouldStop = false;
 
   const emit = (chunk: AgencyStreamChunk) => {
     if (!onChunk) return;
@@ -123,7 +125,12 @@ export async function streamAgencyRespond(
         }
 
         emit(parsed);
+        if (options?.stopOnFirstMessage && (parsed.type === 'delta' || parsed.type === 'message')) {
+          shouldStop = true;
+          break;
+        }
       }
+      if (shouldStop) break;
     }
 
     const remainder = buffer.trim();
@@ -135,14 +142,21 @@ export async function streamAgencyRespond(
         aggregate = parsed.message || aggregate;
       }
       emit(parsed);
+      if (options?.stopOnFirstMessage && (parsed.type === 'delta' || parsed.type === 'message')) {
+        shouldStop = true;
+      }
+    }
+
+    if (shouldStop && reader) {
+      try { await reader.cancel(); } catch (_) {/* ignore */}
     }
 
     return { text: aggregate };
   } catch (e) {
-    const mock = 'Okay! I\'ll generate three logo concepts that honor your selected palette and styles.';
-    aggregate = mock;
-    emit({ raw: mock, type: 'message', message: mock });
-    return { text: mock };
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('Agency stream failed', e);
+    }
+    return { text: aggregate };
   }
 }
 
@@ -155,7 +169,7 @@ export async function requestAgencyResponse({
 }): Promise<{ message: string; helpers: string[] }> {
   let interim = '';
 
-  await streamAgencyRespond(payload, (chunk) => {
+  const streamResult = await streamAgencyRespond(payload, (chunk) => {
     if (!onStream) return;
     if (chunk.type === 'delta') {
       interim += chunk.message || '';
@@ -169,7 +183,7 @@ export async function requestAgencyResponse({
   const jr = await postAgencyRespond(payload);
   const j = jr?.data ?? jr;
 
-  const streamed = extractMessageFromSSE(jr?.text ?? '');
+  const streamed = streamResult?.text ? extractMessageFromSSE(streamResult.text) : interim;
   let agentText: any = extractMessageFromSSE(j?.message || j?.data?.message || streamed || interim);
   let parsed: any = null;
 
@@ -200,8 +214,12 @@ export async function requestAgencyResponse({
     ? Array.from(new Set(helpers.map((h) => String(h).trim()).filter(Boolean)))
     : [];
 
+  const finalMessage = typeof agentText === 'string' && agentText.trim().length
+    ? agentText
+    : interim;
+
   return {
-    message: typeof agentText === 'string' ? agentText : '',
+    message: finalMessage,
     helpers,
   };
 }

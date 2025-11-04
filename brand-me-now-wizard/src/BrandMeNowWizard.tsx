@@ -3,7 +3,15 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Loader2, Wand2, ChevronRight, ChevronLeft, Sparkles, Check } from "lucide-react";
 import { colorMap, parseColors } from './utils/colorUtils';
 import { analyzeImageFromUrl, colorDistanceHex, dominantPaletteColor, comparePaletteWithImage } from './utils/colorAnalysis';
-import { createPaletteIntroPayload, createBrandVisionPayload, composeNameSelectorMessage } from './utils/agencyPayloads';
+import {
+  createPaletteIntroPayload,
+  createBrandVisionPayload,
+  composeNameSelectorMessage,
+  composeLogoGeneratorMessage,
+  createLogoGeneratorIntroPayload,
+  createLogoGeneratorPayload,
+  createNameIntroPayload,
+} from './utils/agencyPayloads';
 import { postAgencyRespond, streamAgencyRespond, requestAgencyResponse, extractMessageFromSSE } from './utils/backendHandler';
 import type { AgencyMessage } from './utils/backendHandler';
 
@@ -22,6 +30,8 @@ export default function BrandMeNowWizard() {
 
   const paletteIntroFallback = "Time to pick your brand colors! This will influence your logos and labels. You can choose from examples below or enter your own colors (e.g., 'blue, green, yellow').";
   const paletteIntroLoadingText = "Preparing color guidance…";
+  const logoIntroFallback = "Let's craft your logo. Share any style cues and I'll generate options that respect your palette.";
+  const logoIntroLoadingText = "Preparing logo guidance…";
 
   const [step, setStep] = useState<Step>("form");
   const [user, setUser] = useState({ name: "", email: "", ig: "" });
@@ -44,6 +54,7 @@ export default function BrandMeNowWizard() {
   // Agent-driven logo conversation states
   const [logoUserPrompt, setLogoUserPrompt] = useState<string>("");
   const [logoAgentIntro, setLogoAgentIntro] = useState<string>("");
+  const [logoIntroLoading, setLogoIntroLoading] = useState<boolean>(false);
   const [logoAgentMessage, setLogoAgentMessage] = useState<string>("");
   const [logoChatHistory, setLogoChatHistory] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
   // Agent-driven palette conversation states
@@ -61,6 +72,7 @@ export default function BrandMeNowWizard() {
   const [nameChatHistory, setNameChatHistory] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
   const [nameLoading, setNameLoading] = useState<boolean>(false);
   const [nameSuggestions, setNameSuggestions] = useState<string[]>([]);
+  const [nameScanSucceeded, setNameScanSucceeded] = useState<boolean>(false);
   // Agent-driven social conversation states (BrandVision)
   const [socialUserPrompt, setSocialUserPrompt] = useState<string>("");
   const [socialAgentIntro, setSocialAgentIntro] = useState<string>("");
@@ -70,9 +82,11 @@ export default function BrandMeNowWizard() {
   const [socialHelpers, setSocialHelpers] = useState<string[]>([]);
   const [socialIntroMessage, setSocialIntroMessage] = useState<string>("");
   const [socialIntroLoading, setSocialIntroLoading] = useState<boolean>(false);
+  const [socialIntroError, setSocialIntroError] = useState<string | null>(null);
   const [socialStreamingText, setSocialStreamingText] = useState<string>("");
   const [socialFinalMessage, setSocialFinalMessage] = useState<string>("");
   const [socialScanSucceeded, setSocialScanSucceeded] = useState<boolean>(false);
+  const [socialRefinePrompt, setSocialRefinePrompt] = useState<string>("");
   // Agent-driven product conversation states (ProductAdvisor)
   const [productUserPrompt, setProductUserPrompt] = useState<string>("");
   const [productAgentIntro, setProductAgentIntro] = useState<string>("");
@@ -108,7 +122,6 @@ export default function BrandMeNowWizard() {
   const BOOKING_SERVICE_ID = 'UL9SNgWU3gjlVPKyzTMv';
   const BOOKING_IFRAME_SRC = `https://api.leadconnectorhq.com/widget/booking/${BOOKING_SERVICE_ID}?iframeId=${BOOKING_IFRAME_ID}`;
 
-  const socialIntroFallback = `Let's start, ${user.name || 'friend'}! Tell me about your brand style, mood, and audience so I can help.`;
   const paletteSubheaderText = paletteIntroMessage || (paletteIntroLoading ? paletteIntroLoadingText : paletteIntroFallback);
 
   useEffect(() => {
@@ -126,9 +139,6 @@ export default function BrandMeNowWizard() {
 
   // Show AI-typed intro when entering the logo step
   useEffect(() => {
-    if (step === "logo") {
-      setLogoAgentIntro("Let's craft your logo. Tell me your style or edits, then click Generate.");
-    }
     if (step === "palette") {
       setPaletteAgentIntro("I can refine your palette to better match your vibe and industry. Describe your desired color direction and click Refine.");
     }
@@ -148,6 +158,60 @@ export default function BrandMeNowWizard() {
       setProfitAgentIntro("I'll estimate units and profit based on your inputs and assumptions. Ask questions or request a scenario.");
     }
   }, [step]);
+
+  useEffect(() => {
+    if (step !== 'logo') {
+      return;
+    }
+    if (logoIntroLoading || logoChatHistory.length) {
+      return;
+    }
+
+    let cancelled = false;
+    let latestText = '';
+
+    const normalizedPalette = normalizePaletteHexes(paletteColors);
+    const payload = createLogoGeneratorIntroPayload({
+      brandName,
+      industry,
+      vibe,
+      paletteHexes: normalizedPalette,
+    });
+
+    const run = async () => {
+      setLogoIntroLoading(true);
+      setLogoAgentIntro('');
+      try {
+        const { message } = await requestAgencyResponse({
+          payload,
+          onStream: (txt) => {
+            if (cancelled) return;
+            latestText = txt;
+            setLogoAgentIntro(txt);
+          },
+        });
+
+        if (cancelled) return;
+        const finalMessage = (message?.trim() || latestText || logoIntroFallback);
+        setLogoAgentIntro(finalMessage);
+        setLogoChatHistory([{ role: 'assistant', text: finalMessage }]);
+      } catch (_) {
+        if (cancelled) return;
+        setLogoAgentIntro(logoIntroFallback);
+        setLogoChatHistory([{ role: 'assistant', text: logoIntroFallback }]);
+      } finally {
+        if (!cancelled) {
+          setLogoIntroLoading(false);
+        }
+      }
+    };
+
+    run();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [step, brandName, industry, vibe, paletteColors, logoChatHistory.length, logoIntroLoading, logoIntroFallback]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -207,27 +271,57 @@ export default function BrandMeNowWizard() {
   }, [step, user, vibe, industry, brandName, paletteColors, logoStyles, iconStyle, typography, logoOptions, chosenLogo]);
 
   useEffect(() => {
+    if (step !== "social") return;
+
+    setSocialIntroLoading(false);
+    setSocialIntroError(null);
+    setSocialIntroMessage("");
+
     let cancelled = false;
+    let latestIntroText = "";
+
     const runIntro = async () => {
       setSocialIntroLoading(true);
       try {
         const payload = createBrandVisionPayload({
-          message: "Let's start",
+          message: "system: onboard step",
           chatHistory: [],
           brandName,
           industry,
           vibe,
           instagram: user.ig,
         });
-        const { message } = await requestAgencyResponse({
-          payload,
-          onStream: (txt) => { if (!cancelled) setSocialIntroMessage(txt); },
+
+        const streamResult = await streamAgencyRespond(payload, (chunk) => {
+          if (cancelled) return;
+          if (chunk.type === 'delta' || chunk.type === 'message') {
+            latestIntroText = chunk.message || latestIntroText;
+            setSocialIntroMessage(latestIntroText);
+          }
         });
-        if (!cancelled && message) {
-          setSocialIntroMessage(message);
+
+        if (!latestIntroText) {
+          const streamText = extractMessageFromSSE(streamResult?.text || '');
+          if (streamText) {
+            latestIntroText = streamText;
+          }
+        }
+
+        if (!latestIntroText) {
+          const jr = await postAgencyRespond(payload);
+          const j = jr?.data ?? jr;
+          const fallback = extractMessageFromSSE(j?.message || j?.data?.message || '');
+          if (fallback) {
+            latestIntroText = fallback;
+          }
+        }
+
+        if (!cancelled && latestIntroText) {
+          setSocialIntroMessage(latestIntroText);
         }
       } catch (e) {
         if (!cancelled) {
+          setSocialIntroError("I couldn't reach BrandVision right now. Tell me about your brand vision to get started.");
           setSocialIntroMessage("");
         }
       } finally {
@@ -236,13 +330,13 @@ export default function BrandMeNowWizard() {
         }
       }
     };
-    if (step === "social" && !socialIntroMessage && !socialIntroLoading) {
-      runIntro();
-    }
+
+    runIntro();
+
     return () => {
       cancelled = true;
     };
-  }, [step, socialIntroMessage, socialIntroLoading, brandName, industry, vibe, user.ig]);
+  }, [step, brandName, industry, vibe, user.ig]);
 
   useEffect(() => {
     if (step !== "palette") return;
@@ -293,6 +387,14 @@ export default function BrandMeNowWizard() {
     setSocialFinalMessage("");
     setSocialScanSucceeded(false);
     setSocialAgentMessage("");
+  }, [step]);
+
+  useEffect(() => {
+    if (step !== "name") return;
+    setNameAgentMessage("");
+    setNameScanSucceeded(false);
+    setNameChatHistory([]);
+  setNameSuggestions([]);
   }, [step]);
 
   const Palettes: string[][] = [
@@ -356,10 +458,7 @@ export default function BrandMeNowWizard() {
     setLogoLoading(true);
     const t0 = performance.now();
     // Pre-generation validation: ensure palette has valid HEX colors
-    const normalizedPalette = (paletteColors || [])
-      .map(c => (colorMap[String(c).toLowerCase()] || c))
-      .map(c => (c.startsWith('#') ? c : `#${c}`))
-      .filter(c => /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c));
+    const normalizedPalette = normalizePaletteHexes(paletteColors);
     if (!normalizedPalette.length) {
       setLogoError("Please select a valid color palette before generating logos.");
       setLogoLoading(false);
@@ -438,10 +537,7 @@ export default function BrandMeNowWizard() {
     setLogoLoading(true);
     const t0 = performance.now();
     // Validate palette hexes first
-    const normalizedPalette = (paletteColors || [])
-      .map(c => (colorMap[String(c).toLowerCase()] || c))
-      .map(c => (c.startsWith('#') ? c : `#${c}`))
-      .filter(c => /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c));
+    const normalizedPalette = normalizePaletteHexes(paletteColors);
     if (!normalizedPalette.length) {
       setLogoError("Please select a valid color palette before generating logos.");
       setLogoLoading(false);
@@ -455,18 +551,15 @@ export default function BrandMeNowWizard() {
       const primaryHex = dominantPaletteColor(normalizedPalette);
       const secondaryHexes = normalizedPalette.filter(h => h !== primaryHex);
 
-      // Build a single text input for the agent (user brief + styles + constraints)
-      const parts: string[] = [];
-      if (logoUserPrompt?.trim()) parts.push(logoUserPrompt.trim());
-      if (logoStyles?.length) parts.push(`styles: ${logoStyles.join(', ')}`);
-      // Icon Style removed from logo generation UI; omit from agent message composition
-      if (typography?.trim()) parts.push(`typography: ${typography}`);
-      parts.push(`palette HEX: ${normalizedPalette.join(', ')}`);
-      parts.push(`PRIMARY emphasis: ${primaryHex} with subtle accents: ${secondaryHexes.join(', ')}`);
-      if (brandName?.trim()) parts.push(`brand: ${brandName}`);
-      if (industry?.trim()) parts.push(`industry: ${industry}`);
-      if (vibe?.trim()) parts.push(`vibe: ${vibe}`);
-      const inputText = parts.join('. ');
+      const inputText = composeLogoGeneratorMessage({
+        prompt: logoUserPrompt,
+        brandName,
+        industry,
+        vibe,
+        paletteHexes: normalizedPalette,
+        styles: logoStyles,
+        typography,
+      });
 
       // Cache before hitting the agent
       const agentCacheKey = JSON.stringify({ k:'agent', count, inputText });
@@ -485,16 +578,14 @@ export default function BrandMeNowWizard() {
         { role: 'user', content: inputText }
       ];
 
-      // General Agency request payload aligned with test_endpoints.py
-      const payload = {
-        recipient_agent: "LogoGenerator",
+      const payload = createLogoGeneratorPayload({
         message: inputText,
-        chat_history,
-        context: { brandName, industry, vibe },
-        file_ids: null,
-        file_urls: null,
-        additional_instructions: null,
-      };
+        chatHistory: chat_history,
+        brandName,
+        industry,
+        vibe,
+        paletteHexes: normalizedPalette,
+      });
 
       // Start streaming for typing effect
       setLogoAgentMessage("");
@@ -778,7 +869,7 @@ export default function BrandMeNowWizard() {
   };
 
   // Analyze brand vision & audience (BrandVision): stream + final JSON
-  const analyzeSocialViaAgent = async (): Promise<string> => {
+  const analyzeSocialViaAgent = async (overridePrompt?: string): Promise<string> => {
     setSocialAgentMessage("");
     setSocialHelpers([]);
     setSocialLoading(true);
@@ -787,18 +878,23 @@ export default function BrandMeNowWizard() {
     setSocialScanSucceeded(false);
     try {
       const parts: string[] = [];
-      if (socialUserPrompt?.trim()) parts.push(socialUserPrompt.trim());
+      const trimmedOverride = overridePrompt?.trim() ?? '';
+      const trimmedPrimary = socialUserPrompt?.trim() ?? '';
+      const activePrompt = trimmedOverride || trimmedPrimary;
+
+      if (activePrompt) parts.push(activePrompt);
       if (vibe?.trim()) parts.push(`vibe: ${vibe}`);
       if (industry?.trim()) parts.push(`industry: ${industry}`);
       if (user?.ig?.trim()) parts.push(`audience: ${user.ig}`);
       const inputText = parts.join('. ');
+      const userDisplay = trimmedOverride || inputText;
 
       const nextHistory: AgencyMessage[] = [
         ...socialChatHistory.map(m => ({ role: m.role as 'user' | 'assistant', content: m.text } as AgencyMessage)),
         { role: 'user', content: inputText }
       ];
 
-      setSocialChatHistory(prev => [...prev, { role: 'user', text: inputText }]);
+      setSocialChatHistory(prev => [...prev, { role: 'user', text: userDisplay }]);
 
       const streamPayload = createBrandVisionPayload({
         message: inputText,
@@ -814,6 +910,7 @@ export default function BrandMeNowWizard() {
         onStream: (txt) => {
           setSocialStreamingText(txt);
           setSocialAgentMessage(txt);
+          setSocialScanSucceeded(true);
         },
       });
 
@@ -1044,9 +1141,16 @@ export default function BrandMeNowWizard() {
     }
   };
 
-  const handleSocialAnalyze = async () => {
+  const handleSocialAnalyze = () => {
     if (socialLoading) return;
-    await analyzeSocialViaAgent();
+    void analyzeSocialViaAgent();
+  };
+
+  const handleSocialRefine = () => {
+    if (socialLoading) return;
+    if (!socialRefinePrompt.trim()) return;
+    void analyzeSocialViaAgent(socialRefinePrompt);
+    setSocialRefinePrompt('');
   };
 
   const handleSocialContinue = () => {
@@ -1131,20 +1235,23 @@ export default function BrandMeNowWizard() {
                     <Sparkles className="h-4 w-4" />
                   </div>
                   <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
-                    {socialIntroLoading && !socialIntroMessage ? (
-                      <span>Let's start…</span>
-                    ) : (
-                      <TypingText text={socialIntroMessage || socialIntroFallback} speed={24} />
-                    )}
+                    {socialIntroLoading ? (
+                      <span>Getting your brand vision ready…</span>
+                    ) : socialIntroMessage ? (
+                      <TypingText text={socialIntroMessage} speed={24} />
+                    ) : socialIntroError ? (
+                      <span>{socialIntroError}</span>
+                    ) : null}
                   </div>
                 </div>
               </div>
               <div className="mt-6 max-w-3xl mx-auto">
                 <StandardTextInput
-                  value={vibe}
-                  onChange={(v)=>setVibe(v)}
+                  value={socialUserPrompt}
+                  onChange={(v)=>setSocialUserPrompt(v)}
                   placeholder="Type your brand vision (e.g., 'Luxury beauty, soft gold, Gen Z wellness')"
                   maxLength={200}
+                  multiline
                 />
                 <p className="mt-2 text-center text-xs text-slate-500">Tip: {tips[currentTipIndex].replace(/^Tip:\s*/i, '')}</p>
                 {(socialStreamingText || socialFinalMessage || socialLoading) && (
@@ -1156,6 +1263,39 @@ export default function BrandMeNowWizard() {
                       <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
                         {socialFinalMessage || socialStreamingText || (socialLoading ? 'Analyzing your brand vision…' : '')}
                       </div>
+                    </div>
+                  </div>
+                )}
+
+                {socialFinalMessage && (
+                  <div className="mt-6">
+                    <div className="text-sm font-medium text-slate-700 mb-1">Need revisions?</div>
+                    <StandardTextInput
+                      value={socialRefinePrompt}
+                      onChange={(v)=>setSocialRefinePrompt(v)}
+                      placeholder="Tell BrandVision how to adjust the vision (tone, audience, specifics)"
+                      multiline
+                      maxLength={220}
+                    />
+                    <div className="mt-3 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={handleSocialRefine}
+                        disabled={socialLoading || !socialRefinePrompt.trim()}
+                        className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {socialLoading ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Updating…
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="mr-2 h-4 w-4" />
+                            Refine Vision
+                          </>
+                        )}
+                      </button>
                     </div>
                   </div>
                 )}
@@ -1192,83 +1332,53 @@ export default function BrandMeNowWizard() {
           {step === "name" && (
             <StepPanel key="name">
               <h2 className="text-2xl md:text-3xl font-semibold text-center">Brand Name Selection</h2>
-              <Subheader text={`Great! ${user.name}, now let's find a name that resonates with your '${vibe}' vibe!`} />
-              <Subheader text="Enter a name or pick a suggestion. We'll automatically check availability and only show names that are available." />
-              <NameChooser value={brandName} onChange={setBrandName} onCheck={async(name)=>MockAPI.availability(name)} onStatusChange={(ok)=>setBrandAvailable(ok)} vibe={vibe} user={user} showMore={showMoreNames} onShowMore={setShowMoreNames} />
-              <div className="mt-8 max-w-3xl mx-auto space-y-6">
+              <div className="mt-4 max-w-3xl mx-auto">
                 <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
                   <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-400">
                     <Sparkles className="h-4 w-4" />
                     <span>Name Selector Agent</span>
                   </div>
                   <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
-                    <TypingText text={nameAgentIntro || "Tell me how you'd like the name to sound and I'll brainstorm options."} speed={24} />
+                    {nameAgentIntro ? (
+                      <TypingText text={nameAgentIntro} speed={24} />
+                    ) : (
+                      <span>Tell me how you'd like the name to sound and I'll brainstorm options.</span>
+                    )}
                   </div>
                 </div>
-
+              </div>
+              <div className="mt-6 max-w-3xl mx-auto">
                 <StandardTextInput
                   value={nameUserPrompt}
                   onChange={(v)=>setNameUserPrompt(v)}
                   placeholder="Describe the naming style or constraints (e.g., short, playful, available .com)"
                   maxLength={220}
+                  multiline
                 />
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-xs text-slate-500">Share any vibes, keywords, or domain needs you have. I'll keep your industry and audience in mind.</p>
-                  <button
-                    type="button"
-                    onClick={handleNameAgentSubmit}
-                    disabled={nameLoading || !(nameUserPrompt.trim() || brandName.trim() || vibe.trim() || industry.trim() || user.ig.trim())}
-                    className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {nameLoading ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Brainstorming…
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="mr-2 h-4 w-4" />
-                        Ask Name Agent
-                      </>
-                    )}
-                  </button>
-                </div>
-
                 {(nameAgentMessage || nameLoading) && (
-                  <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 shadow-sm">
-                    <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-amber-600">
-                      <Sparkles className="h-4 w-4" />
-                      <span>Agent Response</span>
-                    </div>
-                    <div className="mt-2 text-sm text-amber-800 whitespace-pre-line min-h-[48px]">
-                      {nameAgentMessage || (nameLoading ? 'Brainstorming name ideas…' : '')}
+                  <div className="mt-6">
+                    <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
+                      <div className="text-xs uppercase tracking-wide text-slate-400 flex items-center gap-2">
+                        <Sparkles className="h-4 w-4" />
+                        <span>Agent Response</span>
+                      </div>
+                      <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
+                        {nameLoading ? 'Brainstorming name ideas…' : nameAgentMessage}
+                      </div>
                     </div>
                   </div>
                 )}
-
-                {nameSuggestions.length ? (
-                  <div>
-                    <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">AI Suggestions</div>
-                    <div className="flex flex-wrap gap-2">
-                      {nameSuggestions.map((n) => (
-                        <button
-                          key={n}
-                          className={`rounded-full border px-3 py-1 text-sm transition ${brandName===n ? 'border-black bg-black text-white' : 'hover:border-slate-400'}`}
-                          onClick={async()=>{
-                            setBrandName(n);
-                            const r = await MockAPI.availability(n);
-                            setBrandAvailable(r.available);
-                          }}
-                        >
-                          {n}
-                        </button>
-                      ))}
-                    </div>
+                {brandName && (
+                  <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50/80 p-4 shadow-sm">
+                    <div className="text-xs uppercase tracking-wide text-amber-600">Current Pick</div>
+                    <div className="mt-1 text-sm text-amber-800 font-medium">{brandName}</div>
+                    <p className="mt-1 text-xs text-amber-600">
+                      {brandAvailable ? 'Domain looks available from the last check.' : 'We still need to confirm domain availability.'}
+                    </p>
                   </div>
-                ) : null}
-
+                )}
                 {nameChatHistory.length ? (
-                  <div>
+                  <div className="mt-6">
                     <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">Conversation</div>
                     <div className="space-y-2">
                       {nameChatHistory.map((m, i) => (
@@ -1284,9 +1394,29 @@ export default function BrandMeNowWizard() {
                   </div>
                 ) : null}
               </div>
-              <div className="mt-8 flex items-center justify-between">
+              <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
                 <SecondaryButton onClick={()=>setStep("social")}>Back</SecondaryButton>
-                <PrimaryButton onClick={()=>setStep("loading3")} disabled={!brandName.trim() || !brandAvailable}>Continue</PrimaryButton>
+                <div className="flex flex-wrap gap-3 justify-end">
+                  <button
+                    type="button"
+                    onClick={handleNameAgentSubmit}
+                    disabled={nameLoading}
+                    className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {nameLoading ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Brainstorming…
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="mr-2 h-4 w-4" />
+                        Ask Name Agent
+                      </>
+                    )}
+                  </button>
+                  <PrimaryButton onClick={()=>setStep("loading3")} disabled={!brandName.trim() || nameLoading}>Continue</PrimaryButton>
+                </div>
               </div>
             </StepPanel>
           )}
@@ -1350,19 +1480,6 @@ export default function BrandMeNowWizard() {
                   <div className="text-sm text-cyan-700">{paletteAgentMessage}</div>
                 </div>
               ) : null}
-              {paletteChatHistory.length ? (
-                <div className="mt-3 max-w-3xl mx-auto">
-                  <div className="text-xs text-gray-500 mb-1">Conversation</div>
-                  <div className="space-y-2">
-                    {paletteChatHistory.map((m, i) => (
-                      <div key={i} className={`p-2 rounded-lg border ${m.role==='assistant' ? 'bg-cyan-50 border-cyan-200' : 'bg-white'}`}>
-                        <div className="text-[12px] font-semibold mb-1">{m.role==='assistant' ? 'Agent' : 'You'}</div>
-                        <div className="text-sm">{m.text}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
               {paletteSelected && (
                 <div className="mt-6 text-center">
                   <p className="text-gray-700">Here's your color palette! It includes {paletteColors.map(c => c).join(", ")}.</p>
@@ -1396,7 +1513,21 @@ export default function BrandMeNowWizard() {
             <StepPanel key="logo">
               <h2 className="text-2xl md:text-3xl font-semibold text-center">Logo Generation</h2>
               <Subheader text="Customize your style and generate options with the agent." colorClass="text-gray-600" />
-              {/* Animated intro removed per request */}
+              <div className="mt-4 max-w-3xl mx-auto">
+                <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
+                  <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-400">
+                    <Sparkles className="h-4 w-4" />
+                    <span>Logo Agent</span>
+                  </div>
+                  <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
+                    {logoIntroLoading && !logoAgentIntro ? (
+                      <span>{logoIntroLoadingText}</span>
+                    ) : (
+                      <TypingText text={logoAgentIntro || logoIntroFallback} speed={24} />
+                    )}
+                  </div>
+                </div>
+              </div>
               <div className="mt-4 max-w-3xl mx-auto">
                 <label className="block text-sm font-medium text-gray-700 mb-1">logo details</label>
                 {/* Standardized text area for Vision Input */}
@@ -1454,6 +1585,19 @@ export default function BrandMeNowWizard() {
                   )}
                 </PrimaryButton>
               </div>
+              {(logoAgentMessage || logoLoading) && (
+                <div className="mt-6 max-w-3xl mx-auto">
+                  <div className="rounded-2xl border border-cyan-200 bg-cyan-50/80 p-4 shadow-sm">
+                    <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-cyan-600">
+                      <Sparkles className="h-4 w-4" />
+                      <span>Agent Response</span>
+                    </div>
+                    <div className="mt-2 text-sm text-cyan-800 whitespace-pre-line min-h-[48px]">
+                      {logoAgentMessage || (logoLoading ? 'Generating logo directions…' : '')}
+                    </div>
+                  </div>
+                </div>
+              )}
               {/* Error handling: display user-facing errors without debug comments */}
               {logoError && (
                 <div className="mt-3 max-w-3xl mx-auto p-2 rounded-md bg-red-50 border border-red-200 text-sm text-red-700">
@@ -1910,6 +2054,18 @@ async function downloadImage(url: string) {
   }
 }
 
+function normalizePaletteHexes(colors: string[] = []): string[] {
+  return (colors || [])
+    .map((c) => (colorMap[String(c).toLowerCase()] || c))
+    .map((c) => {
+      const value = String(c ?? '').trim();
+      if (!value) return '';
+      const withHash = value.startsWith('#') ? value : `#${value}`;
+      return withHash.toUpperCase();
+    })
+    .filter((c) => /^#([0-9A-F]{3}|[0-9A-F]{6})$/.test(c));
+}
+
 function buildLogoPrompt({ brandName, industry, vibe, paletteColors, logoStyles, iconStyle, typography }: { brandName:string; industry:string; vibe:string; paletteColors:string[]; logoStyles:string[]; iconStyle:string; typography:string }): string {
   const parts: string[] = [];
   parts.push(`${brandName} logo`);
@@ -1963,89 +2119,6 @@ function LabeledNumber({ label, value, onChange }: { label:string; value:number;
       <span className="text-gray-600">{label}</span>
       <input className="rounded-xl px-3 py-2 bg-[#1ae7f6]/10 focus:ring-2 focus:ring-[#1ae7f6]" value={value} onChange={(e)=>onChange(Number(e.target.value))} />
     </label>
-  );
-}
-
-function NameChooser({ value, onChange, onCheck, onStatusChange, vibe, user, showMore, onShowMore }: { value:string; onChange:(v:string)=>void; onCheck:(name:string)=>Promise<{available:boolean; suggestion?:string}>; onStatusChange:(ok:boolean)=>void; vibe:string; user:{name:string; email:string; ig:string}; showMore:boolean; onShowMore:(show:boolean)=>void }) {
-  const [status, setStatus] = useState<null | {available:boolean; suggestion?:string}>(null);
-  const [availableSuggestions, setAvailableSuggestions] = useState<string[]>([]);
-
-  // Build candidate suggestions dynamically based on user input and vibe
-  const candidates = getNameSuggestions(value, vibe, user, showMore);
-
-  // Auto-check availability for input value (debounced)
-  useEffect(() => {
-    const ctrl = new AbortController();
-    const t = setTimeout(async ()=>{
-      const name = value.trim();
-      if(!name) { setStatus(null); onStatusChange(false); return; }
-      try {
-        const r = await onCheck(name);
-        setStatus(r);
-        onStatusChange(!!r.available);
-      } catch(e) {
-        setStatus({ available: false });
-        onStatusChange(false);
-      }
-    }, 400);
-    return ()=>{ clearTimeout(t); ctrl.abort(); };
-  }, [value, onCheck, onStatusChange]);
-
-  // Auto-check availability for suggestion candidates and show only available ones
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      const unique = Array.from(new Set(candidates)).slice(0, showMore ? 18 : 10);
-      const checks = await Promise.all(unique.map(async n => {
-        try { const r = await onCheck(n); return r.available ? n : null; } catch { return null; }
-      }));
-      if(mounted) setAvailableSuggestions(checks.filter(Boolean) as string[]);
-    })();
-    return ()=>{ mounted = false; };
-  }, [candidates, onCheck, showMore]);
-
-  return (
-    <div className="mt-6">
-      <p className="mt-2 text-center text-gray-700">We're showing only names that are currently available:</p>
-      <div className="mt-4 flex flex-wrap gap-2 justify-center">
-        {availableSuggestions.map(name => (
-          <div key={name} className="text-center">
-            <button className="rounded-full border px-3 py-1 text-sm hover:bg-gray-50" onClick={()=>{onChange(name);}}>{name}</button>
-          </div>
-        ))}
-      </div>
-      {!showMore && (
-        <div className="mt-4 flex justify-center">
-          <Chip onClick={() => onShowMore(true)}>More..</Chip>
-        </div>
-      )}
-      <div className="mt-4 max-w-2xl mx-auto grid md:grid-cols-[1fr,auto] gap-2">
-        <StandardTextInput
-          value={value}
-          onChange={(v)=>{onChange(v);}}
-          placeholder="Enter a name or pick one"
-          required
-          maxLength={60}
-          validate={(v)=>/^[A-Za-z0-9 .&-]{1,60}$/.test(v) ? null : "Only letters, numbers, spaces, '&', and '-' allowed (max 60)."}
-        />
-        <button className="rounded-xl px-4 py-3 border" onClick={async()=>{ const r = await onCheck(value); setStatus(r); onStatusChange(!!r.available); }}>Check Availability</button>
-      </div>
-      {status && (
-        <div className={`mt-2 text-center text-sm ${status.available?"text-green-700":"text-orange-700"}`}>
-          {status.available ? <span className="inline-flex items-center gap-1"><Check  className="h-4 w-4"/> Available</span> : <>Not available{status.suggestion?`, try "${status.suggestion}"`:""}</>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StylePicker({ styles, picked, onChange }: { styles:string[]; picked:string[]; onChange:(s:string[])=>void }) {
-  return (
-    <div className="flex flex-wrap gap-2 justify-center mt-4">
-      {styles.map(s => (
-        <button key={s} onClick={()=> onChange(picked.includes(s) ? picked.filter(x=>x!==s) : [...picked, s])} className={`rounded-full border px-3 py-1 text-sm ${picked.includes(s)?"border-black":""}`}>{s}</button>
-      ))}
-    </div>
   );
 }
 
