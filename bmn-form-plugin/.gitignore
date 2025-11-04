@@ -1,0 +1,24 @@
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Environment files
+.env
+.env.*
+
+# Logs and caches
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.cache/
+
+# Node (if any submodules are added)
+node_modules/
+
+# PHP/composer (not currently used, but safe to ignore if added later)
+vendor/
+
+# Do NOT ignore built wizard assets inside brand-me-now-wizard/dist
+# This plugin includes the production build for WordPress usage.

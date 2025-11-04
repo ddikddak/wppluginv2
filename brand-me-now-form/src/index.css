@@ -1,0 +1,240 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+
+/* Global font: Figtree for all text */
+html, body {
+  font-family: 'Figtree', system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px; /* Set default text size to 14px */
+}
+
+/* Headers: enforce 2rem for h2 across wizard */
+h2 {
+  font-size: 2rem;
+  line-height: 1.2;
+}
+
+/* Subheader helper: static 14px per request */
+.subheader {
+  font-size: 14px;
+}
+
+/* Wizard UI enhancements */
+.wizard button,
+.wizard .btn {
+  transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease,
+              box-shadow 200ms ease, transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  -webkit-transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease,
+                      box-shadow 200ms ease, -webkit-transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  -moz-transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease,
+                   box-shadow 200ms ease, -moz-transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  -o-transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease,
+                 box-shadow 200ms ease, -o-transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform, box-shadow;
+}
+
+.wizard button:hover,
+.wizard .btn:hover {
+  transform: scale(1.03);
+  -webkit-transform: scale(1.03);
+  -moz-transform: scale(1.03);
+  -ms-transform: scale(1.03);
+  box-shadow: 0 8px 20px rgba(99, 102, 241, 0.15);
+}
+
+.wizard button:active,
+.wizard .btn:active {
+  transform: scale(0.98);
+  -webkit-transform: scale(0.98);
+  -moz-transform: scale(0.98);
+  -ms-transform: scale(0.98);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+}
+
+.wizard button:focus-visible,
+.wizard .btn:focus-visible {
+  outline: 2px solid #1ae7f6; /* accent cyan */
+  outline-offset: 2px;
+}
+
+/* Variants for consistent styling */
+.wizard .btn-primary {
+  background-color: #1ae7f6; /* accent cyan */
+  color: #111827;
+  box-shadow: 0 2px 8px rgba(26, 231, 246, 0.35);
+}
+.wizard .btn-primary:hover {
+  background-color: #12d5e3; /* darker hover */
+  box-shadow: 0 10px 24px rgba(26, 231, 246, 0.25);
+}
+
+.wizard .btn-secondary {
+  background-color: #fff;
+  color: #111827; /* gray-900 */
+  border: 1px solid #e5e7eb; /* gray-200 */
+  box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+}
+.wizard .btn-secondary:hover {
+  background-color: #f9fafb; /* gray-50 */
+  border-color: #d1d5db; /* gray-300 */
+  box-shadow: 0 8px 18px rgba(0,0,0,0.08);
+}
+
+.wizard .btn-outline {
+  background-color: #fff;
+  color: #111827;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+}
+.wizard .btn-outline:hover {
+  background-color: #f9fafb;
+  border-color: #1ae7f6;
+  box-shadow: 0 10px 24px rgba(26, 231, 246, 0.12);
+}
+
+/* Optional border animation using gradient border on hover */
+.wizard .btn-outline {
+  position: relative;
+}
+.wizard .btn-outline::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(124,58,237,0), rgba(124,58,237,0));
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor; /* Safari */
+  mask-composite: exclude;
+  pointer-events: none;
+  transition: background 200ms ease;
+}
+.wizard .btn-outline:hover::after {
+  background: linear-gradient(135deg, rgba(26,231,246,0.5), rgba(59,130,246,0.5)); /* cyan to blue */
+}
+
+/* Tip text alignment and readability */
+.wizard .tip-text {
+  /* 1) Horizontal centering */
+  text-align: center;
+  /* 2) Reduce width by 10% responsively */
+  width: 90%;
+  max-width: 65ch; /* maintain optimal readability */
+  /* 3) Padding and margins for balance */
+  padding: 1rem;
+  margin-left: auto;
+  margin-right: auto;
+  /* 4) Natural line breaks */
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  hyphens: auto;
+  -webkit-hyphens: auto;
+  -ms-hyphens: auto;
+  /* 8) Ensure contrast meets WCAG AA */
+  color: #374151; /* gray-700 */
+  /* 6 & 7) Smooth fade-in animation */
+  animation: fadeIn 0.5s ease-in-out;
+  /* 9) Maintain font rhythm */
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Tip icon: centered and animated consistently with tip text */
+.wizard .tip-icon {
+  display: inline-block;
+  height: 1.25rem; /* h-5 */
+  width: 1.25rem;  /* w-5 */
+  color: #1ae7f6;
+  margin-bottom: 0.25rem; /* gap with text */
+  animation: fadeIn 0.5s ease-in-out;
+}
+
+/* Animated hero text effects */
+.wizard .hero-animate {
+  animation: heroFadeIn 600ms ease-out both;
+}
+@keyframes heroFadeIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.wizard .animated-gradient {
+  background: linear-gradient(90deg, #1ae7f6, #3b82f6, #14b8a6);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent; /* ensure proper text fill on WebKit */
+  animation: gradientMove 2.5s ease-in-out infinite;
+  will-change: background-position;
+}
+@keyframes gradientMove {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .wizard .hero-animate,
+  .wizard .animated-gradient,
+  .wizard .btn,
+  .wizard button {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+/* Form controls: inputs, selects, textareas — accent cyan and no borders */
+.wizard input,
+.wizard select,
+.wizard textarea {
+  background-color: rgba(26, 231, 246, 0.08);
+  border: none;
+  outline: none;
+  transition: box-shadow 200ms ease, background-color 200ms ease;
+}
+.wizard input::placeholder,
+.wizard textarea::placeholder {
+  color: #6b7280; /* gray-500 */
+}
+.wizard input:focus-visible,
+.wizard select:focus-visible,
+.wizard textarea:focus-visible {
+  box-shadow: 0 0 0 3px rgba(26, 231, 246, 0.35);
+  background-color: rgba(26, 231, 246, 0.12);
+}
+
+/* ===== Overrides per latest requirements ===== */
+/* Centered row for tip icon + text */
+.wizard .tip-row {
+  width: 90%;
+  max-width: 65ch;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Button text color override: #006F74 */
+.wizard .btn-primary,
+.wizard .btn-secondary,
+.wizard .btn-outline {
+  color: #006F74;
+}
+
+/* Tip icon sits inline to the left of text */
+.wizard .tip-icon {
+  margin-bottom: 0;
+}
+
+/* Avoid blue hues in any text gradients */
+.wizard .animated-gradient {
+  background: linear-gradient(90deg, #006F74, #14b8a6, #22c55e);
+}

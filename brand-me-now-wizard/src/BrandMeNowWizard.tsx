@@ -3,6 +3,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Loader2, Wand2, ChevronRight, ChevronLeft, Sparkles, Check } from "lucide-react";
 import { colorMap, parseColors } from './utils/colorUtils';
 import { analyzeImageFromUrl, colorDistanceHex, dominantPaletteColor, comparePaletteWithImage } from './utils/colorAnalysis';
+import { createPaletteIntroPayload, createBrandVisionPayload, composeNameSelectorMessage } from './utils/agencyPayloads';
+import { postAgencyRespond, streamAgencyRespond, requestAgencyResponse, extractMessageFromSSE } from './utils/backendHandler';
+import type { AgencyMessage } from './utils/backendHandler';
 
 export default function BrandMeNowWizard() {
   type Step =
@@ -16,6 +19,9 @@ export default function BrandMeNowWizard() {
     "Tip: Add industry details for more relevant ideas.",
     "Tip: Describe your target market size for accurate projections.",
   ];
+
+  const paletteIntroFallback = "Time to pick your brand colors! This will influence your logos and labels. You can choose from examples below or enter your own colors (e.g., 'blue, green, yellow').";
+  const paletteIntroLoadingText = "Preparing color guidance…";
 
   const [step, setStep] = useState<Step>("form");
   const [user, setUser] = useState({ name: "", email: "", ig: "" });
@@ -43,6 +49,8 @@ export default function BrandMeNowWizard() {
   // Agent-driven palette conversation states
   const [paletteUserPrompt, setPaletteUserPrompt] = useState<string>("");
   const [paletteAgentIntro, setPaletteAgentIntro] = useState<string>("");
+  const [paletteIntroMessage, setPaletteIntroMessage] = useState<string>("");
+  const [paletteIntroLoading, setPaletteIntroLoading] = useState<boolean>(false);
   const [paletteAgentMessage, setPaletteAgentMessage] = useState<string>("");
   const [paletteChatHistory, setPaletteChatHistory] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
   const [paletteLoading, setPaletteLoading] = useState<boolean>(false);
@@ -60,6 +68,11 @@ export default function BrandMeNowWizard() {
   const [socialChatHistory, setSocialChatHistory] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
   const [socialLoading, setSocialLoading] = useState<boolean>(false);
   const [socialHelpers, setSocialHelpers] = useState<string[]>([]);
+  const [socialIntroMessage, setSocialIntroMessage] = useState<string>("");
+  const [socialIntroLoading, setSocialIntroLoading] = useState<boolean>(false);
+  const [socialStreamingText, setSocialStreamingText] = useState<string>("");
+  const [socialFinalMessage, setSocialFinalMessage] = useState<string>("");
+  const [socialScanSucceeded, setSocialScanSucceeded] = useState<boolean>(false);
   // Agent-driven product conversation states (ProductAdvisor)
   const [productUserPrompt, setProductUserPrompt] = useState<string>("");
   const [productAgentIntro, setProductAgentIntro] = useState<string>("");
@@ -95,6 +108,9 @@ export default function BrandMeNowWizard() {
   const BOOKING_SERVICE_ID = 'UL9SNgWU3gjlVPKyzTMv';
   const BOOKING_IFRAME_SRC = `https://api.leadconnectorhq.com/widget/booking/${BOOKING_SERVICE_ID}?iframeId=${BOOKING_IFRAME_ID}`;
 
+  const socialIntroFallback = `Let's start, ${user.name || 'friend'}! Tell me about your brand style, mood, and audience so I can help.`;
+  const paletteSubheaderText = paletteIntroMessage || (paletteIntroLoading ? paletteIntroLoadingText : paletteIntroFallback);
+
   useEffect(() => {
     let t: any;
     const next: Record<Step, Step> = {
@@ -111,7 +127,7 @@ export default function BrandMeNowWizard() {
   // Show AI-typed intro when entering the logo step
   useEffect(() => {
     if (step === "logo") {
-      setLogoAgentIntro("Let’s craft your logo. Tell me your style or edits, then click Generate.");
+      setLogoAgentIntro("Let's craft your logo. Tell me your style or edits, then click Generate.");
     }
     if (step === "palette") {
       setPaletteAgentIntro("I can refine your palette to better match your vibe and industry. Describe your desired color direction and click Refine.");
@@ -120,16 +136,16 @@ export default function BrandMeNowWizard() {
       setNameAgentIntro("Tell me the vibe or constraints (e.g., short, unique, available domain). I'll suggest names and we'll auto-check availability.");
     }
     if (step === "social") {
-      setSocialAgentIntro("I’ll help summarize your brand vision and audience. Share any details, or let me scan your vibe to suggest directions.");
+      setSocialAgentIntro("I'll help summarize your brand vision and audience. Share any details, or let me scan your vibe to suggest directions.");
     }
     if (step === "product") {
-      setProductAgentIntro("Need help picking products? Describe your focus or constraints and I’ll suggest SKUs that fit your brand.");
+      setProductAgentIntro("Need help picking products? Describe your focus or constraints and I'll suggest SKUs that fit your brand.");
     }
     if (step === "preview") {
-      setPreviewAgentIntro("I can adjust the mock‑up layout automatically. Tell me where to place the logo or the background you prefer.");
+      setPreviewAgentIntro("I can adjust the mock-up layout automatically. Tell me where to place the logo or the background you prefer.");
     }
     if (step === "profit") {
-      setProfitAgentIntro("I’ll estimate units and profit based on your inputs and assumptions. Ask questions or request a scenario.");
+      setProfitAgentIntro("I'll estimate units and profit based on your inputs and assumptions. Ask questions or request a scenario.");
     }
   }, [step]);
 
@@ -189,6 +205,95 @@ export default function BrandMeNowWizard() {
       // ignore
     }
   }, [step, user, vibe, industry, brandName, paletteColors, logoStyles, iconStyle, typography, logoOptions, chosenLogo]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const runIntro = async () => {
+      setSocialIntroLoading(true);
+      try {
+        const payload = createBrandVisionPayload({
+          message: "Let's start",
+          chatHistory: [],
+          brandName,
+          industry,
+          vibe,
+          instagram: user.ig,
+        });
+        const { message } = await requestAgencyResponse({
+          payload,
+          onStream: (txt) => { if (!cancelled) setSocialIntroMessage(txt); },
+        });
+        if (!cancelled && message) {
+          setSocialIntroMessage(message);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setSocialIntroMessage("");
+        }
+      } finally {
+        if (!cancelled) {
+          setSocialIntroLoading(false);
+        }
+      }
+    };
+    if (step === "social" && !socialIntroMessage && !socialIntroLoading) {
+      runIntro();
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [step, socialIntroMessage, socialIntroLoading, brandName, industry, vibe, user.ig]);
+
+  useEffect(() => {
+    if (step !== "palette") return;
+    setPaletteIntroMessage("");
+    setPaletteIntroLoading(false);
+    let cancelled = false;
+
+    const runPaletteIntro = async () => {
+      setPaletteIntroLoading(true);
+      setPaletteIntroMessage("");
+
+      const payload = createPaletteIntroPayload({ brandName, industry, vibe });
+
+      try {
+        const { text } = await streamAgencyRespond(payload, ({ type, message }) => {
+          if (type === 'delta') {
+            setPaletteIntroMessage(prev => prev ? `${prev}${message}` : message);
+          } else if (type === 'message') {
+            setPaletteIntroMessage(message || '');
+          }
+        });
+
+        if (!cancelled) {
+          const finalText = text?.trim() ? text : paletteIntroFallback;
+          setPaletteIntroMessage(finalText);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setPaletteIntroMessage(paletteIntroFallback);
+        }
+      } finally {
+        if (!cancelled) {
+          setPaletteIntroLoading(false);
+        }
+      }
+    };
+
+    runPaletteIntro();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [step, brandName, industry, vibe, paletteIntroFallback]);
+
+  useEffect(() => {
+    if (step !== "social") return;
+    setSocialStreamingText("");
+    setSocialFinalMessage("");
+    setSocialScanSucceeded(false);
+    setSocialAgentMessage("");
+  }, [step]);
 
   const Palettes: string[][] = [
     ["#0ea5e9", "#0369a1", "#111827"],
@@ -375,8 +480,8 @@ export default function BrandMeNowWizard() {
       }
 
       // Send chat history including current user message
-      const chat_history = [
-        ...logoChatHistory.map(m => ({ role: m.role, content: m.text })),
+      const chat_history: AgencyMessage[] = [
+        ...logoChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage)),
         { role: 'user', content: inputText }
       ];
 
@@ -394,8 +499,12 @@ export default function BrandMeNowWizard() {
       // Start streaming for typing effect
       setLogoAgentMessage("");
       setLogoChatHistory(prev => [...prev, { role: 'user', text: inputText }]);
-      await streamAgencyRespond(payload, (txt) => {
-        setLogoAgentMessage(txt);
+      await streamAgencyRespond(payload, ({ type, message }) => {
+        if (type === 'delta') {
+          setLogoAgentMessage(prev => prev ? `${prev}${message}` : message);
+        } else if (type === 'message') {
+          setLogoAgentMessage(message || '');
+        }
       });
 
       // Fetch final structured output
@@ -404,7 +513,7 @@ export default function BrandMeNowWizard() {
 
       // Non-stream General Agency returns { success, message, timestamp, file_ids_map }
       // message may itself be a JSON string with { message, logo_urls, ... }
-      let agentText = j?.message || j?.data?.message || '';
+      let agentText = extractMessageFromSSE(j?.message || j?.data?.message || '');
       let parsedInner: any = null;
       if (agentText && typeof agentText === 'string') {
         try { parsedInner = JSON.parse(agentText); } catch(_) { parsedInner = null; }
@@ -434,7 +543,7 @@ export default function BrandMeNowWizard() {
           .filter((s: string) => typeof s === 'string' && s.trim().length > 0);
       }
 
-      // Fallback if the agent didn’t return logos: generate via fal.ai (image model)
+      // Fallback if the agent didn't return logos: generate via fal.ai (image model)
       if (!Array.isArray(urls) || urls.length < count) {
         const basePrompt = buildFalLogoPrompt({
           brandName,
@@ -516,8 +625,8 @@ export default function BrandMeNowWizard() {
       if (industry?.trim()) parts.push(`industry: ${industry}`);
       const inputText = parts.join('. ');
 
-      const chat_history = [
-        ...paletteChatHistory.map(m => ({ role: m.role, content: m.text })),
+      const chat_history: AgencyMessage[] = [
+        ...paletteChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage)),
         { role: 'user', content: inputText }
       ];
 
@@ -532,12 +641,18 @@ export default function BrandMeNowWizard() {
 
       // Stream typing first
       setPaletteChatHistory(prev => [...prev, { role: 'user', text: inputText }]);
-      await streamAgencyRespond(payload, (txt) => setPaletteAgentMessage(txt));
+      await streamAgencyRespond(payload, ({ type, message }) => {
+        if (type === 'delta') {
+          setPaletteAgentMessage(prev => prev ? `${prev}${message}` : message);
+        } else if (type === 'message') {
+          setPaletteAgentMessage(message || '');
+        }
+      });
 
       // Fetch final structured output
       const jr = await postAgencyRespond(payload);
       const j = jr?.data ?? jr;
-      let agentText = j?.message || j?.data?.message || '';
+      let agentText = extractMessageFromSSE(j?.message || j?.data?.message || '');
       let parsedInner: any = null;
       if (agentText && typeof agentText === 'string') {
         try { parsedInner = JSON.parse(agentText); } catch(_) { parsedInner = null; }
@@ -576,20 +691,27 @@ export default function BrandMeNowWizard() {
   };
 
   // Suggest brand names via General Agency (stream + final JSON)
-  const suggestNamesViaAgent = async () => {
+  const suggestNamesViaAgent = async (promptOverride?: string) => {
+    const userPrompt = typeof promptOverride === "string" ? promptOverride : nameUserPrompt;
+    const trimmedPrompt = userPrompt?.trim() ?? "";
+    const inputText = composeNameSelectorMessage({
+      prompt: userPrompt,
+      brandName,
+      industry,
+      vibe,
+      instagram: user?.ig,
+    });
+
+    if (!inputText) {
+      setNameAgentMessage("Tell me how you want the name to sound and I'll brainstorm options for you.");
+      return;
+    }
+
     setNameAgentMessage("");
     setNameLoading(true);
     try {
-      const parts: string[] = [];
-      if (nameUserPrompt?.trim()) parts.push(nameUserPrompt.trim());
-      if (brandName?.trim()) parts.push(`seed: ${brandName}`);
-      if (vibe?.trim()) parts.push(`vibe: ${vibe}`);
-      if (industry?.trim()) parts.push(`industry: ${industry}`);
-      if (user?.ig?.trim()) parts.push(`audience: ${user.ig}`);
-      const inputText = parts.join('. ');
-
-      const chat_history = [
-        ...nameChatHistory.map(m => ({ role: m.role, content: m.text })),
+      const chat_history: AgencyMessage[] = [
+        ...nameChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage)),
         { role: 'user', content: inputText }
       ];
 
@@ -602,13 +724,20 @@ export default function BrandMeNowWizard() {
         additional_instructions: null,
       };
 
-      setNameChatHistory(prev => [...prev, { role: 'user', text: inputText }]);
-      await streamAgencyRespond(payload, (txt) => setNameAgentMessage(txt));
+      const userDisplay = trimmedPrompt || inputText;
+      setNameChatHistory(prev => [...prev, { role: 'user', text: userDisplay }]);
+      await streamAgencyRespond(payload, ({ type, message }) => {
+        if (type === 'delta') {
+          setNameAgentMessage(prev => prev ? `${prev}${message}` : message);
+        } else if (type === 'message') {
+          setNameAgentMessage(message || '');
+        }
+      });
 
       // Final structured response
       const jr = await postAgencyRespond(payload);
       const j = jr?.data ?? jr;
-      let agentText = j?.message || j?.data?.message || '';
+      let agentText = extractMessageFromSSE(j?.message || j?.data?.message || '');
       let parsedInner: any = null;
       if (agentText && typeof agentText === 'string') {
         try { parsedInner = JSON.parse(agentText); } catch(_) { parsedInner = null; }
@@ -639,63 +768,69 @@ export default function BrandMeNowWizard() {
     }
   };
 
+  const handleNameAgentSubmit = async () => {
+    if (nameLoading) return;
+    const currentPrompt = nameUserPrompt;
+    await suggestNamesViaAgent(currentPrompt);
+    if (currentPrompt?.trim()) {
+      setNameUserPrompt("");
+    }
+  };
+
   // Analyze brand vision & audience (BrandVision): stream + final JSON
-  const analyzeSocialViaAgent = async () => {
+  const analyzeSocialViaAgent = async (): Promise<string> => {
     setSocialAgentMessage("");
+    setSocialHelpers([]);
     setSocialLoading(true);
+    setSocialStreamingText("");
+    setSocialFinalMessage("");
+    setSocialScanSucceeded(false);
     try {
       const parts: string[] = [];
       if (socialUserPrompt?.trim()) parts.push(socialUserPrompt.trim());
       if (vibe?.trim()) parts.push(`vibe: ${vibe}`);
       if (industry?.trim()) parts.push(`industry: ${industry}`);
-      if (user?.ig?.trim()) parts.push(`ig: @${user.ig}`);
+      if (user?.ig?.trim()) parts.push(`audience: ${user.ig}`);
       const inputText = parts.join('. ');
 
-      const chat_history = [
-        ...socialChatHistory.map(m => ({ role: m.role, content: m.text })),
+      const nextHistory: AgencyMessage[] = [
+        ...socialChatHistory.map(m => ({ role: m.role as 'user' | 'assistant', content: m.text } as AgencyMessage)),
         { role: 'user', content: inputText }
       ];
 
-      const payload = {
-        recipient_agent: "BrandVision",
-        message: inputText,
-        chat_history,
-        file_ids: null,
-        file_urls: null,
-        additional_instructions: null,
-      };
-
       setSocialChatHistory(prev => [...prev, { role: 'user', text: inputText }]);
-      await streamAgencyRespond(payload, (txt) => setSocialAgentMessage(txt));
 
-      const jr = await postAgencyRespond(payload);
-      const j = jr?.data ?? jr;
-      let agentText = j?.message || j?.data?.message || '';
-      let parsedInner: any = null;
-      if (agentText && typeof agentText === 'string') {
-        try { parsedInner = JSON.parse(agentText); } catch(_) { parsedInner = null; }
-      } else if (typeof agentText === 'object' && agentText) {
-        parsedInner = agentText;
+      const streamPayload = createBrandVisionPayload({
+        message: inputText,
+        chatHistory: nextHistory,
+        brandName,
+        industry,
+        vibe,
+        instagram: user.ig,
+      });
+
+      const { message: finalMessage, helpers } = await requestAgencyResponse({
+        payload: streamPayload,
+        onStream: (txt) => {
+          setSocialStreamingText(txt);
+          setSocialAgentMessage(txt);
+        },
+      });
+
+      if (finalMessage) {
+        setSocialFinalMessage(finalMessage);
+        setSocialAgentMessage(finalMessage);
+        setSocialScanSucceeded(true);
+        setSocialChatHistory(prev => [...prev, { role: 'assistant', text: finalMessage }]);
       }
-      if (parsedInner && parsedInner.message) {
-        agentText = parsedInner.message;
-      }
-      // Extract helper suggestions for UI chips
-      let helpers: string[] = [];
-      if (parsedInner) {
-        helpers = parsedInner.helper_suggestions || parsedInner.suggestions || [];
-      }
-      if (!Array.isArray(helpers) || !helpers.length) {
-        helpers = j?.helper_suggestions || j?.data?.helper_suggestions || [];
-      }
-      if (Array.isArray(helpers)) {
-        const unique = Array.from(new Set(helpers.map(h => String(h).trim()).filter(Boolean)));
-        setSocialHelpers(unique);
-      }
-      setSocialAgentMessage(agentText || "");
-      setSocialChatHistory(prev => [...prev, { role: 'assistant', text: agentText || 'Summarized your brand vision and audience.' }]);
+
+      setSocialHelpers(helpers);
+
+      return finalMessage;
     } catch (e:any) {
-      setSocialAgentMessage(e?.message || 'Failed to analyze vision. Please try again.');
+      const msg = e?.message || 'Failed to analyze vision. Please try again.';
+      setSocialAgentMessage(msg);
+      return "";
     } finally {
       setSocialLoading(false);
     }
@@ -714,8 +849,8 @@ export default function BrandMeNowWizard() {
       if (industry?.trim()) parts.push(`industry: ${industry}`);
       const inputText = parts.join('. ');
 
-      const chat_history = [
-        ...productChatHistory.map(m => ({ role: m.role, content: m.text })),
+      const chat_history: AgencyMessage[] = [
+        ...productChatHistory.map(m => ({ role: m.role as 'user' | 'assistant', content: m.text } as AgencyMessage)),
         { role: 'user', content: inputText }
       ];
 
@@ -729,11 +864,17 @@ export default function BrandMeNowWizard() {
       };
 
       setProductChatHistory(prev => [...prev, { role: 'user', text: inputText }]);
-      await streamAgencyRespond(payload, (txt) => setProductAgentMessage(txt));
+      await streamAgencyRespond(payload, ({ type, message }) => {
+        if (type === 'delta') {
+          setProductAgentMessage(prev => prev ? `${prev}${message}` : message);
+        } else if (type === 'message') {
+          setProductAgentMessage(message || '');
+        }
+      });
 
       const jr = await postAgencyRespond(payload);
       const j = jr?.data ?? jr;
-      let agentText = j?.message || j?.data?.message || '';
+      let agentText = extractMessageFromSSE(j?.message || j?.data?.message || '');
       let parsedInner: any = null;
       if (agentText && typeof agentText === 'string') {
         try { parsedInner = JSON.parse(agentText); } catch(_) { parsedInner = null; }
@@ -778,8 +919,8 @@ export default function BrandMeNowWizard() {
       parts.push(`overlay: x=${logoOverlay.x}, y=${logoOverlay.y}, scale=${logoOverlay.scale}, bg=${logoOverlay.bg}`);
       const inputText = parts.join('. ');
 
-      const chat_history = [
-        ...previewChatHistory.map(m => ({ role: m.role, content: m.text })),
+      const chat_history: AgencyMessage[] = [
+        ...previewChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage)),
         { role: 'user', content: inputText }
       ];
 
@@ -793,11 +934,17 @@ export default function BrandMeNowWizard() {
       };
 
       setPreviewChatHistory(prev => [...prev, { role: 'user', text: inputText }]);
-      await streamAgencyRespond(payload, (txt) => setPreviewAgentMessage(txt));
+      await streamAgencyRespond(payload, ({ type, message }) => {
+        if (type === 'delta') {
+          setPreviewAgentMessage(prev => prev ? `${prev}${message}` : message);
+        } else if (type === 'message') {
+          setPreviewAgentMessage(message || '');
+        }
+      });
 
       const jr = await postAgencyRespond(payload);
       const j = jr?.data ?? jr;
-      let agentText = j?.message || j?.data?.message || '';
+      let agentText = extractMessageFromSSE(j?.message || j?.data?.message || '');
       let parsedInner: any = null;
       if (agentText && typeof agentText === 'string') {
         try { parsedInner = JSON.parse(agentText); } catch(_) { parsedInner = null; }
@@ -841,8 +988,8 @@ export default function BrandMeNowWizard() {
       parts.push(`base: ${profit.base}, retail: ${profit.retail}, followers: ${profit.followers}, conv: ${profit.conv}`);
       const inputText = parts.join('. ');
 
-      const chat_history = [
-        ...profitChatHistory.map(m => ({ role: m.role, content: m.text })),
+      const chat_history: AgencyMessage[] = [
+        ...profitChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage)),
         { role: 'user', content: inputText }
       ];
 
@@ -856,11 +1003,17 @@ export default function BrandMeNowWizard() {
       };
 
       setProfitChatHistory(prev => [...prev, { role: 'user', text: inputText }]);
-      await streamAgencyRespond(payload, (txt) => setProfitAgentMessage(txt));
+      await streamAgencyRespond(payload, ({ type, message }) => {
+        if (type === 'delta') {
+          setProfitAgentMessage(prev => prev ? `${prev}${message}` : message);
+        } else if (type === 'message') {
+          setProfitAgentMessage(message || '');
+        }
+      });
 
       const jr = await postAgencyRespond(payload);
       const j = jr?.data ?? jr;
-      let agentText = j?.message || j?.data?.message || '';
+      let agentText = extractMessageFromSSE(j?.message || j?.data?.message || '');
       let parsedInner: any = null;
       if (agentText && typeof agentText === 'string') {
         try { parsedInner = JSON.parse(agentText); } catch(_) { parsedInner = null; }
@@ -891,6 +1044,26 @@ export default function BrandMeNowWizard() {
     }
   };
 
+  const handleSocialAnalyze = async () => {
+    if (socialLoading) return;
+    await analyzeSocialViaAgent();
+  };
+
+  const handleSocialContinue = () => {
+    if (socialLoading) return;
+    if (!socialScanSucceeded) return;
+    setStep("loading2");
+  };
+
+  useEffect(() => {
+    if (step === 'form') {
+      setSocialIntroMessage('');
+      setSocialAgentMessage('');
+      setSocialHelpers([]);
+      setSocialChatHistory([]);
+    }
+  }, [step]);
+
   return (
   <div className={`wizard w-full flex justify-center ${step === "form" ? "" : "bg-gradient-to-b from-[#1ae7f6]/10 to-white"} py-12`}>
       <div className="w-full max-w-5xl p-6 md:p-10">
@@ -911,7 +1084,7 @@ export default function BrandMeNowWizard() {
                 </motion.span>
                 , your AI‑powered assistant.
                 <br/>
-                <TypingText text="Let’s start your brand." speed={22} className="text-gray-700" />
+                <TypingText text="Let's start your brand." speed={22} className="text-gray-700" />
               </h1>
               <p className="mt-4 text-center text-gray-600 max-w-2xl mx-auto">Create your session so we can save progress and pick up anytime.</p>
               <div className="mt-8 grid md:grid-cols-3 gap-3 max-w-4xl mx-auto">
@@ -952,13 +1125,20 @@ export default function BrandMeNowWizard() {
           {step === "social" && (
             <StepPanel key="social">
               <h2 className="text-2xl md:text-3xl font-semibold text-center mt-4">Vision Input / Social Scan</h2>
-              <Subheader text={`Hi, ${user.name}. Now let's define your brand vision to create something amazing.`} />
-              <Subheader text="This helps me generate personalized palettes, logos, and suggestions." />
-              {user.ig ? (
-                <Subheader text={`Scanning @${user.ig} for vibe and audience insights... Choose one option or add more details below.`} />
-              ) : (
-                <Subheader text="Tell me about your brand style, mood, and audience." colorClass="text-gray-600" />
-              )}
+              <div className="mt-6 max-w-3xl mx-auto">
+                <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
+                  <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-400">
+                    <Sparkles className="h-4 w-4" />
+                  </div>
+                  <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
+                    {socialIntroLoading && !socialIntroMessage ? (
+                      <span>Let's start…</span>
+                    ) : (
+                      <TypingText text={socialIntroMessage || socialIntroFallback} speed={24} />
+                    )}
+                  </div>
+                </div>
+              </div>
               <div className="mt-6 max-w-3xl mx-auto">
                 <StandardTextInput
                   value={vibe}
@@ -966,37 +1146,43 @@ export default function BrandMeNowWizard() {
                   placeholder="Type your brand vision (e.g., 'Luxury beauty, soft gold, Gen Z wellness')"
                   maxLength={200}
                 />
-                <div className="mt-4 flex flex-wrap gap-2 justify-center">
-                  {getDynamicSuggestions(vibe, showMoreVibes).map(opt => (
-                    <Chip key={opt} onClick={()=>setVibe(opt)}>{opt}</Chip>
-                  ))}
-                </div>
-                {!showMoreVibes && (
-                  <div className="mt-4 flex justify-center">
-                    <Chip onClick={() => setShowMoreVibes(true)}>More..</Chip>
+                <p className="mt-2 text-center text-xs text-slate-500">Tip: {tips[currentTipIndex].replace(/^Tip:\s*/i, '')}</p>
+                {(socialStreamingText || socialFinalMessage || socialLoading) && (
+                  <div className="mt-6">
+                    <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
+                      <div className="text-xs uppercase tracking-wide text-slate-400">
+                        <Sparkles className="h-4 w-4" />
+                      </div>
+                      <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
+                        {socialFinalMessage || socialStreamingText || (socialLoading ? 'Analyzing your brand vision…' : '')}
+                      </div>
+                    </div>
                   </div>
                 )}
-                <div className="mt-2 text-sm flex justify-center">
-                  <div className="tip-row flex items-center gap-2">
-                    <Wand2 className="tip-icon" aria-hidden="true"/>
-                    <AnimatePresence mode="wait">
-                      <motion.div
-                        key={currentTipIndex}
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.5, ease: "easeInOut" }}
-                        className="tip-text"
-                      >
-                        {tips[currentTipIndex]}
-                      </motion.div>
-                    </AnimatePresence>
-                  </div>
-                </div>
               </div>
-              <div className="mt-8 flex items-center justify-between">
+              <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
                 <SecondaryButton onClick={()=>setStep("form")}>Back</SecondaryButton>
-                <PrimaryButton onClick={()=>setStep("loading2")} disabled={!vibe.trim() && !user.ig.trim()}>Continue</PrimaryButton>
+                <div className="flex flex-wrap gap-3 justify-end">
+                  <button
+                    type="button"
+                    onClick={handleSocialAnalyze}
+                    disabled={socialLoading || (!vibe.trim() && !user.ig.trim())}
+                    className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {socialLoading ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Analyzing…
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="mr-2 h-4 w-4" />
+                        Analyze Vision
+                      </>
+                    )}
+                  </button>
+                  <PrimaryButton onClick={handleSocialContinue} disabled={!socialScanSucceeded || socialLoading}>Continue</PrimaryButton>
+                </div>
               </div>
             </StepPanel>
           )}
@@ -1007,42 +1193,97 @@ export default function BrandMeNowWizard() {
             <StepPanel key="name">
               <h2 className="text-2xl md:text-3xl font-semibold text-center">Brand Name Selection</h2>
               <Subheader text={`Great! ${user.name}, now let's find a name that resonates with your '${vibe}' vibe!`} />
-              <Subheader text="Enter a name or pick a suggestion. We’ll automatically check availability and only show names that are available." />
+              <Subheader text="Enter a name or pick a suggestion. We'll automatically check availability and only show names that are available." />
               <NameChooser value={brandName} onChange={setBrandName} onCheck={async(name)=>MockAPI.availability(name)} onStatusChange={(ok)=>setBrandAvailable(ok)} vibe={vibe} user={user} showMore={showMoreNames} onShowMore={setShowMoreNames} />
-              {/* Animated intro removed per request */}
-              {/* Chat prompt removed per request: keep logo step only */}
-              {nameAgentMessage ? (
-                <div className="mt-3 max-w-3xl mx-auto p-3 rounded-lg bg-amber-50 border border-amber-200">
-                  <div className="text-sm text-amber-700">{nameAgentMessage}</div>
-                </div>
-              ) : null}
-              {nameSuggestions.length ? (
-                <div className="mt-3 max-w-3xl mx-auto">
-                  <div className="text-xs text-gray-500 mb-1">AI Suggestions</div>
-                  <div className="flex flex-wrap gap-2">
-                    {nameSuggestions.map((n) => (
-                      <button key={n} className={`rounded-full border px-3 py-1 text-sm ${brandName===n?"border-black":""}`} onClick={async()=>{
-                        setBrandName(n);
-                        const r = await MockAPI.availability(n);
-                        setBrandAvailable(r.available);
-                      }}>{n}</button>
-                    ))}
+              <div className="mt-8 max-w-3xl mx-auto space-y-6">
+                <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
+                  <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-400">
+                    <Sparkles className="h-4 w-4" />
+                    <span>Name Selector Agent</span>
+                  </div>
+                  <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
+                    <TypingText text={nameAgentIntro || "Tell me how you'd like the name to sound and I'll brainstorm options."} speed={24} />
                   </div>
                 </div>
-              ) : null}
-              {nameChatHistory.length ? (
-                <div className="mt-3 max-w-3xl mx-auto">
-                  <div className="text-xs text-gray-500 mb-1">Conversation</div>
-                  <div className="space-y-2">
-                    {nameChatHistory.map((m, i) => (
-                      <div key={i} className={`p-2 rounded-lg border ${m.role==='assistant' ? 'bg-amber-50 border-amber-200' : 'bg-white'}`}>
-                        <div className="text-[12px] font-semibold mb-1">{m.role==='assistant' ? 'Agent' : 'You'}</div>
-                        <div className="text-sm">{m.text}</div>
-                      </div>
-                    ))}
-                  </div>
+
+                <StandardTextInput
+                  value={nameUserPrompt}
+                  onChange={(v)=>setNameUserPrompt(v)}
+                  placeholder="Describe the naming style or constraints (e.g., short, playful, available .com)"
+                  maxLength={220}
+                />
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-xs text-slate-500">Share any vibes, keywords, or domain needs you have. I'll keep your industry and audience in mind.</p>
+                  <button
+                    type="button"
+                    onClick={handleNameAgentSubmit}
+                    disabled={nameLoading || !(nameUserPrompt.trim() || brandName.trim() || vibe.trim() || industry.trim() || user.ig.trim())}
+                    className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {nameLoading ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Brainstorming…
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="mr-2 h-4 w-4" />
+                        Ask Name Agent
+                      </>
+                    )}
+                  </button>
                 </div>
-              ) : null}
+
+                {(nameAgentMessage || nameLoading) && (
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 shadow-sm">
+                    <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-amber-600">
+                      <Sparkles className="h-4 w-4" />
+                      <span>Agent Response</span>
+                    </div>
+                    <div className="mt-2 text-sm text-amber-800 whitespace-pre-line min-h-[48px]">
+                      {nameAgentMessage || (nameLoading ? 'Brainstorming name ideas…' : '')}
+                    </div>
+                  </div>
+                )}
+
+                {nameSuggestions.length ? (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">AI Suggestions</div>
+                    <div className="flex flex-wrap gap-2">
+                      {nameSuggestions.map((n) => (
+                        <button
+                          key={n}
+                          className={`rounded-full border px-3 py-1 text-sm transition ${brandName===n ? 'border-black bg-black text-white' : 'hover:border-slate-400'}`}
+                          onClick={async()=>{
+                            setBrandName(n);
+                            const r = await MockAPI.availability(n);
+                            setBrandAvailable(r.available);
+                          }}
+                        >
+                          {n}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {nameChatHistory.length ? (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">Conversation</div>
+                    <div className="space-y-2">
+                      {nameChatHistory.map((m, i) => (
+                        <div
+                          key={i}
+                          className={`p-3 rounded-xl border ${m.role==='assistant' ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-white border-slate-200 text-slate-700'}`}
+                        >
+                          <div className="text-[12px] font-semibold mb-1">{m.role==='assistant' ? 'Agent' : 'You'}</div>
+                          <div className="text-sm whitespace-pre-line">{m.text}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
               <div className="mt-8 flex items-center justify-between">
                 <SecondaryButton onClick={()=>setStep("social")}>Back</SecondaryButton>
                 <PrimaryButton onClick={()=>setStep("loading3")} disabled={!brandName.trim() || !brandAvailable}>Continue</PrimaryButton>
@@ -1055,7 +1296,7 @@ export default function BrandMeNowWizard() {
           {step === "palette" && (
             <StepPanel key="palette">
               <h2 className="text-2xl md:text-3xl font-semibold text-center">Color Palette</h2>
-              <Subheader text="Time to pick your brand colors! This will influence your logos and labels. You can choose from examples below or enter your own colors (e.g., 'blue, green, yellow')." colorClass="text-gray-600" />
+              <Subheader text={paletteSubheaderText} colorClass="text-gray-600" />
               <div className="mt-6">
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   {Palettes.slice(0, 4).map((p, idx) => (
@@ -1359,7 +1600,7 @@ export default function BrandMeNowWizard() {
           {step === "book" && (
             <StepPanel key="book">
               <h2 className="text-2xl md:text-3xl font-semibold text-center">Book a Call</h2>
-              <p className="mt-2 text-center text-gray-600">Pick a GHL calendar slot. We’ll email a summary with your assets.</p>
+              <p className="mt-2 text-center text-gray-600">Pick a GHL calendar slot. We'll email a summary with your assets.</p>
               <div className="mt-6">
                 <iframe
                   id={BOOKING_IFRAME_ID}
@@ -1378,7 +1619,7 @@ export default function BrandMeNowWizard() {
           {step === "done" && (
             <StepPanel key="done">
               <h2 className="text-2xl md:text-3xl font-semibold text-center">All set 🎉</h2>
-              <p className="mt-2 text-center text-gray-600">We’ll send your brand summary and assets to {user.email}.</p>
+              <p className="mt-2 text-center text-gray-600">We'll send your brand summary and assets to {user.email}.</p>
               <div className="mt-8 flex justify-center gap-3">
                 <SecondaryButton onClick={()=>setStep("form")}>Start Over</SecondaryButton>
                 <PrimaryButton onClick={()=>alert("Finish")}>Finish</PrimaryButton>
@@ -1645,98 +1886,6 @@ async function fetchFalImage(
   return j.data.image_url as string;
 }
 
-// WordPress proxy: Agency respond endpoint (non-stream)
-async function postAgencyRespond(payload: any): Promise<any> {
-  // Use root preview proxy when running under Vite preview to avoid missing routes
-  const host = typeof window !== 'undefined' ? (window.location.hostname || 'localhost') : 'localhost';
-  const isLocalDevOrPreview = typeof window !== 'undefined' && ['4173','5173'].includes(String(window.location.port));
-  const endpoint = isLocalDevOrPreview ? `http://${host}:5502/wp-json/agui-chat/v1/agency/respond` : '/wp-json/agui-chat/v1/agency/respond';
-  try {
-    const r = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!r.ok) {
-      throw new Error(`Agency respond failed: ${r.status}`);
-    }
-    try {
-      const data = await r.json();
-      return data;
-    } catch (e) {
-      // Some proxies may return text chunks; expose raw text for debugging
-      const txt = await r.text();
-      return { ok: true, data: txt };
-    }
-  } catch (e) {
-    // Local preview fallback: return empty data so upstream logic will fall back to fal.ai image generation silently
-    return { ok: true, data: {} };
-  }
-}
-
-// WordPress proxy: Agency stream endpoint (SSE typing for agent messages)
-async function streamAgencyRespond(payload: any, onChunk: (text: string) => void): Promise<{ text: string }> {
-  const host = typeof window !== 'undefined' ? (window.location.hostname || 'localhost') : 'localhost';
-  const isLocalDevOrPreview = typeof window !== 'undefined' && ['4173','5173'].includes(String(window.location.port));
-  const endpoint = isLocalDevOrPreview ? `http://${host}:5502/wp-json/agui-chat/v1/agency/stream` : '/wp-json/agui-chat/v1/agency/stream';
-  let aggregate = '';
-  try {
-    const r = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'text/event-stream',
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!r.ok) throw new Error(`Agency stream failed: ${r.status}`);
-    const reader = r.body?.getReader();
-    const decoder = new TextDecoder('utf-8');
-    if (!reader) {
-      // Fallback: treat as text
-      const txt = await r.text();
-      aggregate = txt;
-      onChunk(aggregate);
-      return { text: aggregate };
-    }
-    // Parse SSE: lines like `data: <text or json>`
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      // Break into lines and extract `data:` payloads
-      const lines = chunk.split(/\r?\n/);
-      for (const line of lines) {
-        if (!line) continue;
-        if (line.startsWith('data:')) {
-          let data = line.slice(5).trim();
-          // Some servers send JSON objects per chunk; try to unwrap message fields
-          if (data) {
-            try {
-              const obj = JSON.parse(data);
-              // prefer obj.message if present, otherwise use the raw data
-              if (obj && (typeof obj.message === 'string')) {
-                data = obj.message;
-              }
-            } catch (_) {
-              // not JSON, keep as text
-            }
-            aggregate += (aggregate ? '\n' : '') + data;
-            onChunk(aggregate);
-          }
-        }
-      }
-    }
-    return { text: aggregate };
-  } catch (e) {
-    // Local fallback: emit a short typed message
-    const mock = 'Okay! I\'ll generate three logo concepts that honor your selected palette and styles.';
-    aggregate = mock;
-    onChunk(aggregate);
-    return { text: aggregate };
-  }
-}
-
 async function downloadImage(url: string) {
   try {
     const r = await fetch(url, {
@@ -1857,7 +2006,7 @@ function NameChooser({ value, onChange, onCheck, onStatusChange, vibe, user, sho
 
   return (
     <div className="mt-6">
-      <p className="mt-2 text-center text-gray-700">We’re showing only names that are currently available:</p>
+      <p className="mt-2 text-center text-gray-700">We're showing only names that are currently available:</p>
       <div className="mt-4 flex flex-wrap gap-2 justify-center">
         {availableSuggestions.map(name => (
           <div key={name} className="text-center">
@@ -1883,7 +2032,7 @@ function NameChooser({ value, onChange, onCheck, onStatusChange, vibe, user, sho
       </div>
       {status && (
         <div className={`mt-2 text-center text-sm ${status.available?"text-green-700":"text-orange-700"}`}>
-          {status.available ? <span className="inline-flex items-center gap-1"><Check  className="h-4 w-4"/> Available</span> : <>Not available{status.suggestion?`, try “${status.suggestion}”`:""}</>}
+          {status.available ? <span className="inline-flex items-center gap-1"><Check  className="h-4 w-4"/> Available</span> : <>Not available{status.suggestion?`, try "${status.suggestion}"`:""}</>}
         </div>
       )}
     </div>
@@ -1908,3 +2057,4 @@ function Stat({ title, value }: { title:string; value:string }) {
     </div>
   );
 }
+

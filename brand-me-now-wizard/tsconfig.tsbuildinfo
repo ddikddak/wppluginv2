@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/brandmenowwizard.tsx","./src/main.tsx","./src/utils/coloranalysis.ts","./src/utils/colorutils.ts","./src/utils/logospec.ts","./src/utils/mockupapi.ts","./src/utils/svgutils.ts","./src/utils/validation.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/brandmenowwizard.tsx","./src/main.tsx","./src/utils/agencypayloads.ts","./src/utils/backendhandler.ts","./src/utils/coloranalysis.ts","./src/utils/colorutils.ts","./src/utils/logospec.ts","./src/utils/mockupapi.ts","./src/utils/svgutils.ts","./src/utils/validation.ts"],"version":"5.9.3"}
