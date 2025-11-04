@@ -125,6 +125,26 @@ const server = http.createServer(async (req,res)=>{
     return sendJson(res, 200, publicCfg);
   }
 
+  // Dynamic wizard preview: mirrors WordPress shortcode output using built assets
+  if (pathname === '/preview/bm_wizard' || pathname === '/preview/bm-wizard') {
+    try {
+      const distDir = path.join(ROOT, 'bmn-plugin', 'brand-me-now-wizard', 'dist');
+      const indexPath = path.join(distDir, 'index.html');
+      const raw = fs.readFileSync(indexPath, 'utf8');
+
+      const assetPrefix = '/bmn-plugin/brand-me-now-wizard/dist/';
+      const htmlWithAssets = raw.replace(/\.\/assets\//g, assetPrefix + 'assets/');
+      const configScript = `\n    <script>\n      (function(){\n        const baseCfg = {\n          fastapi_base: '',\n          fastApiBase: '',\n          wpAgencyRespond: '/wp-json/agui-chat/v1/agency/respond',\n          wpAgencyStream: '/wp-json/agui-chat/v1/agency/stream',\n          wpSettingsEndpoint: '/wp-json/agui-chat/v1/settings',\n          agentImageEndpoint: ''\n        };\n        window.BMN_CONFIG = Object.assign({}, baseCfg, window.BMN_CONFIG || {});\n        window.__BMN_CONFIG__ = Object.assign({}, window.BMN_CONFIG, {\n          wpSendEndpoint: window.BMN_CONFIG.wpAgencyRespond\n        });\n      })();\n    </script>\n  `;
+      const finalHtml = htmlWithAssets.replace('</head>', `${configScript}</head>`);
+
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(finalHtml);
+    } catch (err) {
+      console.error('Wizard preview failed:', err);
+      return res.end('<!doctype html><html><body><p>Wizard preview unavailable.</p></body></html>');
+    }
+  }
+
   // Image generation endpoint: try Fal.ai first if FAL_KEY is set, then proxy to WP if WP_ORIGIN is set, then Agent if AGENT_IMAGE_ENDPOINT is set, else fallback
   if (pathname === '/wp-json/agui-chat/v1/image/generate') {
     const WP_ORIGIN = process.env.WP_ORIGIN || '';
