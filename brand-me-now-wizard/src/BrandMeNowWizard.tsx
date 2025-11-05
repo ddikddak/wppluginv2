@@ -1423,10 +1423,11 @@ export default function BrandMeNowWizard() {
   const handleLogoRefine = () => {
     if (logoLoading) return;
     if (!logoRefinePrompt.trim()) return;
-    // Combine refine prompt with context about selected logo
+    // Format refine message with logo URL if available
+    const userMessage = logoRefinePrompt.trim();
     const refineText = chosenLogo 
-      ? `${logoRefinePrompt.trim()}. Refine based on the currently selected logo.`
-      : logoRefinePrompt.trim();
+      ? `Edit the logo (${chosenLogo}) considering these instructions: ${userMessage}`
+      : `Edit the logo considering these instructions: ${userMessage}`;
     setLogoUserPrompt(refineText);
     void generateLogoOptionsViaAgent(3);
     setLogoRefinePrompt('');
@@ -1625,6 +1626,12 @@ export default function BrandMeNowWizard() {
   const handleMockupRefine = () => {
     if (mockupLoading) return;
     if (!mockupRefinePrompt.trim()) return;
+    // Format refine message with mockup URL if available
+    const userMessage = mockupRefinePrompt.trim();
+    const refineText = chosenMockup 
+      ? `Edit the mockup (${chosenMockup}) considering these instructions: ${userMessage}`
+      : `Edit the mockup considering these instructions: ${userMessage}`;
+    setMockupUserPrompt(refineText);
     void generateMockupOptionsViaAgent(3);
     setMockupRefinePrompt('');
   };
