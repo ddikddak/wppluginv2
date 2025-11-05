@@ -365,6 +365,8 @@ export default function BrandMeNowWizard() {
   const [productIntroLoading, setProductIntroLoading] = useState<boolean>(false);
   const [productIntroError, setProductIntroError] = useState<string | null>(null);
   const [productScanSucceeded, setProductScanSucceeded] = useState<boolean>(false);
+  const [productSkus, setProductSkus] = useState<string[]>([]);
+  const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
   // Agent-driven mockup conversation states (MockupGenerator)
   const [mockupUserPrompt, setMockupUserPrompt] = useState<string>("");
   const [mockupIntroLoading, setMockupIntroLoading] = useState<boolean>(false);
@@ -447,11 +449,13 @@ export default function BrandMeNowWizard() {
       setProductIntroError(null);
 
       const normalizedPalette = normalizePaletteHexes(paletteColors);
+      const brandVisionHistory: AgencyMessage[] = socialChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage));
       const payload = createProductSelectorIntroPayload({
         brandName,
         industry,
         vibe,
         paletteHexes: normalizedPalette,
+        brandVisionHistory,
       });
 
       let accumulatedText = "";
@@ -496,7 +500,7 @@ export default function BrandMeNowWizard() {
     return () => {
       cancelled = true;
     };
-  }, [step, brandName, industry, vibe, paletteColors]);
+  }, [step, brandName, industry, vibe, paletteColors, socialChatHistory]);
 
   useEffect(() => {
     if (step !== "logo") return;
@@ -511,11 +515,13 @@ export default function BrandMeNowWizard() {
       setLogoIntroError(null);
 
       const normalizedPalette = normalizePaletteHexes(paletteColors);
+      const brandVisionHistory: AgencyMessage[] = socialChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage));
       const payload = createLogoGeneratorIntroPayload({
         brandName,
         industry,
         vibe,
         paletteHexes: normalizedPalette,
+        brandVisionHistory,
       });
 
       let accumulatedText = "";
@@ -556,7 +562,7 @@ export default function BrandMeNowWizard() {
     return () => {
       cancelled = true;
     };
-  }, [step, brandName, industry, vibe, paletteColors, logoIntroFallback]);
+  }, [step, brandName, industry, vibe, paletteColors, logoIntroFallback, socialChatHistory]);
 
   useEffect(() => {
     if (step !== "mockup") return;
@@ -573,11 +579,13 @@ export default function BrandMeNowWizard() {
       setMockupIntroError(null);
 
       const normalizedPalette = normalizePaletteHexes(paletteColors);
+      const brandVisionHistory: AgencyMessage[] = socialChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage));
       const payload = createMockupGeneratorIntroPayload({
         brandName,
         industry,
         vibe,
         paletteHexes: normalizedPalette,
+        brandVisionHistory,
       });
 
       let accumulatedText = "";
@@ -618,7 +626,7 @@ export default function BrandMeNowWizard() {
     return () => {
       cancelled = true;
     };
-  }, [step, brandName, industry, vibe, paletteColors]);
+  }, [step, brandName, industry, vibe, paletteColors, socialChatHistory]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -766,59 +774,74 @@ export default function BrandMeNowWizard() {
     setNameIntroMessage("");
 
     let cancelled = false;
-    let latestIntroText = "";
+    let accumulatedText = "";
 
     const runIntro = async () => {
       setNameIntroLoading(true);
+      setNameIntroMessage("");
+      setNameIntroError(null);
+
       try {
+        const brandVisionHistory: AgencyMessage[] = socialChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage));
         const payload = createNameIntroPayload({
           brandName,
           industry,
           vibe,
           instagram: user.ig,
+          brandVisionHistory,
         });
 
-        const streamResult = await streamAgencyRespond(payload, (chunk) => {
+        const { text } = await streamAgencyRespond(payload, ({ type, message }) => {
           if (cancelled) return;
-          if (chunk.type === 'delta') {
-            // Accumulate delta chunks
-            if (chunk.message) {
-              latestIntroText += chunk.message;
-            }
-            setNameIntroMessage(latestIntroText);
-          } else if (chunk.type === 'message') {
-            // Replace with full message when received
-            latestIntroText = chunk.message || latestIntroText;
-            setNameIntroMessage(latestIntroText);
+          if (type === 'delta') {
+            accumulatedText = accumulatedText ? `${accumulatedText}${message}` : message;
+            const extracted = extractMessageFromStructuredOutput(accumulatedText, true);
+            setNameIntroMessage(extracted);
+          } else if (type === 'message') {
+            accumulatedText = message || accumulatedText;
+            const extracted = extractMessageFromStructuredOutput(accumulatedText, true);
+            setNameIntroMessage(extracted);
           }
         });
 
-        if (!latestIntroText) {
-          const streamText = extractMessageFromSSE(streamResult?.text || '');
-          if (streamText) {
-            latestIntroText = streamText;
+        if (!cancelled) {
+          const finalText = text?.trim() || '';
+          let extracted = '';
+          
+          if (finalText) {
+            extracted = extractMessageFromStructuredOutput(finalText, true);
           }
-        }
-
-        if (!latestIntroText) {
-          const jr = await postAgencyRespond(payload);
-          const j = jr?.data ?? jr;
-          const fallback = extractMessageFromSSE(j?.message || j?.data?.message || '');
-          if (fallback) {
-            latestIntroText = fallback;
+          
+          // Fallback chain
+          if (!extracted) {
+            const streamText = extractMessageFromSSE(finalText);
+            if (streamText) {
+              extracted = streamText;
+            }
           }
-        }
 
-        if (!latestIntroText) {
-          // Default message when NameSelector doesn't load
-          const greetingName = brandName?.trim() || 'a';
-          latestIntroText = `Hi, ${greetingName}. Let's find the perfect brand name for you.\n\nI'll brainstorm names that match your vibe and automatically check domain availability.\n\nShare your naming preferences, style, or any keywords you want included.`;
-        }
+          if (!extracted) {
+            try {
+              const jr = await postAgencyRespond(payload);
+              const j = jr?.data ?? jr;
+              const fallback = extractMessageFromSSE(j?.message || j?.data?.message || '');
+              if (fallback) {
+                extracted = fallback;
+              }
+            } catch (_) {
+              // Ignore fallback errors
+            }
+          }
 
-        if (!cancelled && latestIntroText) {
-          setNameIntroMessage(latestIntroText);
+          if (!extracted) {
+            // Default message when NameSelector doesn't load
+            const greetingName = brandName?.trim() || 'a';
+            extracted = `Hi, ${greetingName}. Let's find the perfect brand name for you.\n\nI'll brainstorm names that match your vibe and automatically check domain availability.\n\nShare your naming preferences, style, or any keywords you want included.`;
+          }
+
+          setNameIntroMessage(extracted);
         }
-      } catch (e) {
+      } catch (e: any) {
         if (!cancelled) {
           setNameIntroError("I couldn't reach NameSelector right now. Tell me about your naming preferences to get started.");
           setNameIntroMessage("");
@@ -835,7 +858,7 @@ export default function BrandMeNowWizard() {
     return () => {
       cancelled = true;
     };
-  }, [step, brandName, industry, vibe, user.ig]);
+  }, [step, brandName, industry, vibe, user.ig, socialChatHistory]);
 
   useEffect(() => {
     if (step !== "palette") return;
@@ -849,7 +872,8 @@ export default function BrandMeNowWizard() {
       setPaletteIntroMessage("");
       setPaletteIntroError(null);
 
-      const payload = createPaletteIntroPayload({ brandName, industry, vibe });
+      const brandVisionHistory: AgencyMessage[] = socialChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage));
+      const payload = createPaletteIntroPayload({ brandName, industry, vibe, brandVisionHistory });
 
       let accumulatedText = "";
 
@@ -888,7 +912,7 @@ export default function BrandMeNowWizard() {
     return () => {
       cancelled = true;
     };
-  }, [step, brandName, industry, vibe, paletteIntroFallback]);
+  }, [step, brandName, industry, vibe, paletteIntroFallback, socialChatHistory]);
 
   useEffect(() => {
     if (step !== "social") return;
@@ -1113,6 +1137,7 @@ export default function BrandMeNowWizard() {
         { role: 'user', content: inputText }
       ];
 
+      const brandVisionHistory: AgencyMessage[] = socialChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage));
       const payload = createLogoGeneratorPayload({
         message: inputText,
         chatHistory: chat_history,
@@ -1120,6 +1145,7 @@ export default function BrandMeNowWizard() {
         industry,
         vibe,
         paletteHexes: normalizedPalette,
+        brandVisionHistory,
       });
 
       // Start streaming for typing effect
@@ -1288,15 +1314,32 @@ export default function BrandMeNowWizard() {
       const inputText = parts.join('. ');
       const userDisplay = trimmedOverride || inputText;
 
+      // Prepend BrandVision history to palette chat history
+      const brandVisionHistory: AgencyMessage[] = socialChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage));
+      const paletteHistory: AgencyMessage[] = paletteChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage));
       const chat_history: AgencyMessage[] = [
-        ...paletteChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage)),
+        ...brandVisionHistory,
+        ...paletteHistory,
         { role: 'user', content: inputText }
       ];
+
+      // Extract BrandVision user inputs and add to context
+      const context: Record<string, string> = { brandName, industry, vibe };
+      if (brandVisionHistory.length > 0) {
+        const brandVisionInputs = brandVisionHistory
+          .filter(m => m.role === 'user')
+          .map(m => m.content)
+          .filter(Boolean)
+          .join(' ');
+        if (brandVisionInputs) {
+          context.brandVision = brandVisionInputs;
+        }
+      }
 
       const payload = {
         recipient_agent: "ColorPaletteSelector",
         input: inputText,
-        context: { brandName, industry, vibe },
+        context,
         params: { output: "color_palette", format: "json" },
         structured_output: true,
         chat_history,
@@ -1427,6 +1470,7 @@ export default function BrandMeNowWizard() {
         { role: 'user', content: inputText }
       ];
 
+      const brandVisionHistory: AgencyMessage[] = socialChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage));
       const payload = createMockupGeneratorPayload({
         message: inputText,
         chatHistory: chat_history,
@@ -1434,6 +1478,7 @@ export default function BrandMeNowWizard() {
         industry,
         vibe,
         paletteHexes: normalizedPalette,
+        brandVisionHistory,
       });
 
       setMockupAgentMessage("");
@@ -1582,6 +1627,7 @@ export default function BrandMeNowWizard() {
 
       setNameChatHistory(prev => [...prev, { role: 'user', text: userDisplay }]);
 
+      const brandVisionHistory: AgencyMessage[] = socialChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage));
       const streamPayload = createNamePayload({
         message: inputText,
         chatHistory: nextHistory,
@@ -1589,6 +1635,7 @@ export default function BrandMeNowWizard() {
         industry,
         vibe,
         instagram: user.ig,
+        brandVisionHistory,
       });
 
       let accumulatedStreamText = '';
@@ -1798,6 +1845,8 @@ export default function BrandMeNowWizard() {
     setProductStreamingText("");
     setProductFinalMessage("");
     setProductScanSucceeded(false);
+    setProductSkus([]);
+    setSelectedSkus(new Set());
     try {
       const parts: string[] = [];
       const trimmedOverride = overridePrompt?.trim() ?? '';
@@ -1824,6 +1873,7 @@ export default function BrandMeNowWizard() {
 
       setProductChatHistory(prev => [...prev, { role: 'user', text: userDisplay }]);
 
+      const brandVisionHistory: AgencyMessage[] = socialChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage));
       const streamPayload = createProductSelectorPayload({
         message: inputText,
         chatHistory: nextHistory,
@@ -1831,9 +1881,10 @@ export default function BrandMeNowWizard() {
         industry,
         vibe,
         paletteHexes: paletteColors,
+        brandVisionHistory,
       });
 
-      const { message: finalMessage, helpers } = await requestAgencyResponse({
+      const { message: finalMessage, helpers, skus } = await requestAgencyResponse({
         payload: streamPayload,
         onStream: (txt) => {
           setProductStreamingText(txt);
@@ -1847,6 +1898,16 @@ export default function BrandMeNowWizard() {
         setProductAgentMessage(finalMessage);
         setProductScanSucceeded(true);
         setProductChatHistory(prev => [...prev, { role: 'assistant', text: finalMessage }]);
+      }
+
+      // Extract and store SKUs from structured output
+      if (skus && Array.isArray(skus) && skus.length > 0) {
+        setProductSkus(skus);
+        // Optionally auto-select all SKUs, or leave them unselected
+        // setSelectedSkus(new Set(skus));
+      } else if (helpers && Array.isArray(helpers) && helpers.length > 0) {
+        // Fallback: if no SKUs but we have helpers, use helpers as SKUs
+        setProductSkus(helpers);
       }
 
       return finalMessage;
@@ -1883,6 +1944,26 @@ export default function BrandMeNowWizard() {
     if (productLoading) return;
     if (!productScanSucceeded) return;
     setStep("loading6");
+  };
+
+  const handleSkuToggle = (sku: string) => {
+    setSelectedSkus(prev => {
+      const next = new Set(prev);
+      if (next.has(sku)) {
+        next.delete(sku);
+      } else {
+        next.add(sku);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllSkus = () => {
+    setSelectedSkus(new Set(productSkus));
+  };
+
+  const handleDeselectAllSkus = () => {
+    setSelectedSkus(new Set());
   };
 
   // Style preview (PreviewStylist): stream + final JSON
@@ -2112,6 +2193,7 @@ export default function BrandMeNowWizard() {
               <AgentIntroWidget
                 introMessage={socialIntroMessage}
                 introError={socialIntroError}
+                loadingText={socialIntroLoading ? "Getting your brand vision ready…" : undefined}
               />
               <div className="mt-6 max-w-3xl mx-auto">
                 <StandardTextInput
@@ -2146,7 +2228,7 @@ export default function BrandMeNowWizard() {
                   <button
                     type="button"
                     onClick={handleSocialAnalyze}
-                    disabled={socialLoading || (!vibe.trim() && !user.ig.trim())}
+                    disabled={socialLoading}
                     className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {socialLoading ? (
@@ -2175,7 +2257,7 @@ export default function BrandMeNowWizard() {
               <AgentIntroWidget
                 introMessage={nameIntroMessage}
                 introError={nameIntroError}
-                loadingText="Getting your brand name ready…"
+                loadingText={nameIntroLoading ? "Getting your brand name ready…" : undefined}
               />
               <div className="mt-6 max-w-3xl mx-auto">
                 <StandardTextInput
@@ -2248,7 +2330,7 @@ export default function BrandMeNowWizard() {
                   <button
                     type="button"
                     onClick={handleNameAnalyze}
-                    disabled={nameLoading || (!vibe.trim() && !user.ig.trim())}
+                    disabled={nameLoading}
                     className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {nameLoading ? (
@@ -2383,7 +2465,7 @@ export default function BrandMeNowWizard() {
                   <button
                     type="button"
                     onClick={handlePaletteAnalyze}
-                    disabled={paletteLoading || !paletteUserPrompt.trim()}
+                    disabled={paletteLoading}
                     className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {paletteLoading ? (
@@ -2531,7 +2613,7 @@ export default function BrandMeNowWizard() {
               <AgentIntroWidget
                 introMessage={productIntroMessage}
                 introError={productIntroError}
-                loadingText="Getting your product selection ready…"
+                loadingText={productIntroLoading ? "Getting your product selection ready…" : undefined}
               />
               <div className="mt-6 max-w-3xl mx-auto">
                 <div className="mb-4">
@@ -2568,6 +2650,68 @@ export default function BrandMeNowWizard() {
                   loading={productLoading}
                   loadingText="Analyzing your product preferences…"
                 />
+                {productSkus.length > 0 && (
+                  <div className="mt-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="text-sm font-medium text-slate-700">
+                        Recommended Products ({selectedSkus.size} selected)
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleSelectAllSkus}
+                          disabled={productLoading}
+                          className="text-xs px-3 py-1 rounded-lg border border-slate-300 hover:border-slate-400 text-slate-700 disabled:cursor-not-allowed disabled:opacity-60 transition"
+                        >
+                          Select All
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDeselectAllSkus}
+                          disabled={productLoading}
+                          className="text-xs px-3 py-1 rounded-lg border border-slate-300 hover:border-slate-400 text-slate-700 disabled:cursor-not-allowed disabled:opacity-60 transition"
+                        >
+                          Deselect All
+                        </button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {productSkus.map((sku) => {
+                        const isSelected = selectedSkus.has(sku);
+                        return (
+                          <button
+                            key={sku}
+                            type="button"
+                            onClick={() => handleSkuToggle(sku)}
+                            disabled={productLoading}
+                            className={`relative rounded-xl border-2 p-4 text-left transition-all ${
+                              isSelected
+                                ? "border-[#1ae7f6] bg-[#1ae7f6]/5 shadow-sm"
+                                : "border-slate-200 hover:border-slate-300 bg-white"
+                            } disabled:cursor-not-allowed disabled:opacity-60`}
+                          >
+                            <div className="flex items-start gap-3">
+                              <div className={`flex-shrink-0 mt-1 w-5 h-5 rounded border-2 flex items-center justify-center ${
+                                isSelected
+                                  ? "border-[#1ae7f6] bg-[#1ae7f6]"
+                                  : "border-slate-300"
+                              }`}>
+                                {isSelected && (
+                                  <Check className="w-3 h-3 text-white" />
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="font-medium text-slate-900 text-sm">
+                                  {sku}
+                                </div>
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 {productFinalMessage && (
                   <RefinementWidget
                     refinePrompt={productRefinePrompt}
@@ -2585,7 +2729,7 @@ export default function BrandMeNowWizard() {
                   <button
                     type="button"
                     onClick={handleProductAnalyze}
-                    disabled={productLoading || (!vibe.trim() && !industry.trim() && !brandName.trim())}
+                    disabled={productLoading}
                     className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {productLoading ? (

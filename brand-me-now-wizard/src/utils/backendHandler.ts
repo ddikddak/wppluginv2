@@ -166,7 +166,7 @@ export async function requestAgencyResponse({
 }: {
   payload: AgencyPayload;
   onStream?: (text: string) => void;
-}): Promise<{ message: string; helpers: string[] }> {
+}): Promise<{ message: string; helpers: string[]; skus?: string[] }> {
   let interim = '';
 
   const streamResult = await streamAgencyRespond(payload, (chunk) => {
@@ -187,6 +187,7 @@ export async function requestAgencyResponse({
   let agentText: any = extractMessageFromSSE(j?.message || j?.data?.message || streamed || interim);
   let parsed: any = null;
 
+  // First, try to parse agentText as JSON
   if (agentText && typeof agentText === 'string') {
     try {
       parsed = JSON.parse(agentText);
@@ -197,6 +198,15 @@ export async function requestAgencyResponse({
     parsed = agentText;
   }
 
+  // If j itself is a structured object with SKUs, use it as parsed
+  if (!parsed && j && typeof j === 'object' && (j.SKUs || j.message)) {
+    parsed = j;
+  }
+  // Also check j.data
+  if (!parsed && j?.data && typeof j.data === 'object' && (j.data.SKUs || j.data.message)) {
+    parsed = j.data;
+  }
+
   if (parsed && parsed.message) {
     agentText = parsed.message;
   }
@@ -204,10 +214,21 @@ export async function requestAgencyResponse({
   let helpers: string[] = [];
   if (parsed) {
     helpers = parsed.helper_suggestions || parsed.suggestions || [];
+    // Extract SKUs from structured output if present
+    if (parsed.SKUs && Array.isArray(parsed.SKUs)) {
+      helpers = [...helpers, ...parsed.SKUs];
+    }
   }
   if (!Array.isArray(helpers) || !helpers.length) {
     const fallback = j?.helper_suggestions || j?.data?.helper_suggestions || [];
     if (Array.isArray(fallback)) helpers = fallback;
+    // Also check for SKUs in the response
+    if (j?.SKUs && Array.isArray(j.SKUs)) {
+      helpers = [...helpers, ...j.SKUs];
+    }
+    if (j?.data?.SKUs && Array.isArray(j.data.SKUs)) {
+      helpers = [...helpers, ...j.data.SKUs];
+    }
   }
 
   helpers = Array.isArray(helpers)
@@ -218,9 +239,20 @@ export async function requestAgencyResponse({
     ? agentText
     : interim;
 
+  // Extract SKUs separately for structured output
+  let skus: string[] = [];
+  if (parsed?.SKUs && Array.isArray(parsed.SKUs)) {
+    skus = parsed.SKUs.map((s: any) => String(s).trim()).filter(Boolean);
+  } else if (j?.SKUs && Array.isArray(j.SKUs)) {
+    skus = j.SKUs.map((s: any) => String(s).trim()).filter(Boolean);
+  } else if (j?.data?.SKUs && Array.isArray(j.data.SKUs)) {
+    skus = j.data.SKUs.map((s: any) => String(s).trim()).filter(Boolean);
+  }
+
   return {
     message: finalMessage,
     helpers,
+    skus: skus.length > 0 ? skus : undefined,
   };
 }
 

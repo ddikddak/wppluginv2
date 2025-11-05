@@ -5,6 +5,7 @@ type PaletteIntroArgs = {
   brandName?: string;
   industry?: string;
   vibe?: string;
+  brandVisionHistory?: AgencyMessage[];
 };
 
 type BrandVisionArgs = {
@@ -22,6 +23,7 @@ type NameSelectorArgs = {
   industry?: string;
   vibe?: string;
   instagram?: string;
+  brandVisionHistory?: AgencyMessage[];
 };
 
 type NameIntroArgs = {
@@ -29,6 +31,7 @@ type NameIntroArgs = {
   industry?: string;
   vibe?: string;
   instagram?: string;
+  brandVisionHistory?: AgencyMessage[];
 };
 
 type LogoGeneratorMessageArgs = {
@@ -46,6 +49,7 @@ type LogoGeneratorIntroArgs = {
   industry?: string;
   vibe?: string;
   paletteHexes?: string[];
+  brandVisionHistory?: AgencyMessage[];
 };
 
 type LogoGeneratorPayloadArgs = {
@@ -55,6 +59,7 @@ type LogoGeneratorPayloadArgs = {
   industry?: string;
   vibe?: string;
   paletteHexes?: string[];
+  brandVisionHistory?: AgencyMessage[];
 };
 
 type ProductSelectorIntroArgs = {
@@ -62,6 +67,7 @@ type ProductSelectorIntroArgs = {
   industry?: string;
   vibe?: string;
   paletteHexes?: string[];
+  brandVisionHistory?: AgencyMessage[];
 };
 
 type ProductSelectorPayloadArgs = {
@@ -71,6 +77,7 @@ type ProductSelectorPayloadArgs = {
   industry?: string;
   vibe?: string;
   paletteHexes?: string[];
+  brandVisionHistory?: AgencyMessage[];
 };
 
 type MockupGeneratorMessageArgs = {
@@ -86,6 +93,7 @@ type MockupGeneratorIntroArgs = {
   industry?: string;
   vibe?: string;
   paletteHexes?: string[];
+  brandVisionHistory?: AgencyMessage[];
 };
 
 type MockupGeneratorPayloadArgs = {
@@ -95,6 +103,7 @@ type MockupGeneratorPayloadArgs = {
   industry?: string;
   vibe?: string;
   paletteHexes?: string[];
+  brandVisionHistory?: AgencyMessage[];
 };
 
 type PaletteRefinementArgs = {
@@ -104,9 +113,10 @@ type PaletteRefinementArgs = {
   industry?: string;
   vibe?: string;
   chatHistory: AgencyMessage[];
+  brandVisionHistory?: AgencyMessage[];
 };
 
-export function createPaletteIntroPayload({ brandName, industry, vibe }: PaletteIntroArgs): AgencyPayload {
+export function createPaletteIntroPayload({ brandName, industry, vibe, brandVisionHistory }: PaletteIntroArgs): AgencyPayload {
   const context: Record<string, string> = {};
 
   const trimmedBrand = brandName?.trim();
@@ -116,6 +126,18 @@ export function createPaletteIntroPayload({ brandName, industry, vibe }: Palette
   if (trimmedBrand) context.brandName = trimmedBrand;
   if (trimmedIndustry) context.industry = trimmedIndustry;
   if (trimmedVibe) context.vibe = trimmedVibe;
+
+  // Extract BrandVision user inputs and add to context
+  if (Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0) {
+    const brandVisionInputs = brandVisionHistory
+      .filter(m => m.role === 'user')
+      .map(m => m.content)
+      .filter(Boolean)
+      .join(' ');
+    if (brandVisionInputs) {
+      context.brandVision = brandVisionInputs;
+    }
+  }
 
   const instructions: string[] = [
     'You are acting as a color palette expert for a branding wizard.',
@@ -131,10 +153,15 @@ export function createPaletteIntroPayload({ brandName, industry, vibe }: Palette
 
   const message = instructions.join(' ');
 
+  // Include BrandVision history if available
+  const chat_history = Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0
+    ? [...brandVisionHistory]
+    : [];
+
   return {
     recipient_agent: 'ColorPaletteSelector',
     message,
-    chat_history: [],
+    chat_history,
     context,
     file_ids: null,
     file_urls: null,
@@ -184,7 +211,7 @@ export function composeNameSelectorMessage({ prompt, brandName, industry, vibe, 
   return parts.join('. ').trim();
 }
 
-export function createNameIntroPayload({ brandName, industry, vibe, instagram }: NameIntroArgs): AgencyPayload {
+export function createNameIntroPayload({ brandName, industry, vibe, instagram, brandVisionHistory }: NameIntroArgs): AgencyPayload {
   const context: Record<string, string> = {};
   const trimmedBrand = brandName?.trim();
   const trimmedIndustry = industry?.trim();
@@ -195,6 +222,18 @@ export function createNameIntroPayload({ brandName, industry, vibe, instagram }:
   if (trimmedIndustry) context.industry = trimmedIndustry;
   if (trimmedVibe) context.vibe = trimmedVibe;
   if (trimmedIg) context.instagram = trimmedIg;
+
+  // Extract BrandVision user inputs and add to context
+  if (Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0) {
+    const brandVisionInputs = brandVisionHistory
+      .filter(m => m.role === 'user')
+      .map(m => m.content)
+      .filter(Boolean)
+      .join(' ');
+    if (brandVisionInputs) {
+      context.brandVision = brandVisionInputs;
+    }
+  }
 
   const introParts = [
     'You are the NameSelector agent for a branding wizard.',
@@ -210,10 +249,15 @@ export function createNameIntroPayload({ brandName, industry, vibe, instagram }:
 
   const message = introParts.join(' ');
 
+  // Include BrandVision history if available
+  const chat_history = Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0
+    ? [...brandVisionHistory]
+    : [];
+
   return {
     recipient_agent: 'NameSelector',
     message,
-    chat_history: [],
+    chat_history,
     context,
     file_ids: null,
     file_urls: null,
@@ -221,7 +265,7 @@ export function createNameIntroPayload({ brandName, industry, vibe, instagram }:
   };
 }
 
-export function createNamePayload({ message, chatHistory, brandName, industry, vibe, instagram }: BrandVisionArgs): AgencyPayload {
+export function createNamePayload({ message, chatHistory, brandName, industry, vibe, instagram, brandVisionHistory }: BrandVisionArgs & { brandVisionHistory?: AgencyMessage[] }): AgencyPayload {
   const context: Record<string, string> = {};
   const trimmedBrand = brandName?.trim();
   const trimmedIndustry = industry?.trim();
@@ -233,12 +277,30 @@ export function createNamePayload({ message, chatHistory, brandName, industry, v
   if (trimmedVibe) context.vibe = trimmedVibe;
   if (trimmedIg) context.instagram = trimmedIg;
 
+  // Extract BrandVision user inputs and add to context
+  if (Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0) {
+    const brandVisionInputs = brandVisionHistory
+      .filter(m => m.role === 'user')
+      .map(m => m.content)
+      .filter(Boolean)
+      .join(' ');
+    if (brandVisionInputs) {
+      context.brandVision = brandVisionInputs;
+    }
+  }
+
   const baseMessage = message?.trim() ? message : 'Suggest brand names based on the provided context.';
+
+  // Prepend BrandVision history to chat history
+  const brandVision = Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0
+    ? [...brandVisionHistory]
+    : [];
+  const fullChatHistory = [...brandVision, ...chatHistory];
 
   return {
     recipient_agent: 'NameSelector',
     message: baseMessage,
-    chat_history: chatHistory,
+    chat_history: fullChatHistory,
     context,
     file_ids: null,
     file_urls: null,
@@ -281,7 +343,7 @@ export function composeLogoGeneratorMessage({ prompt, brandName, industry, vibe,
   return parts.join('. ').trim();
 }
 
-export function createLogoGeneratorIntroPayload({ brandName, industry, vibe, paletteHexes }: LogoGeneratorIntroArgs): AgencyPayload {
+export function createLogoGeneratorIntroPayload({ brandName, industry, vibe, paletteHexes, brandVisionHistory }: LogoGeneratorIntroArgs): AgencyPayload {
   const context: Record<string, string> = {};
   const trimmedBrand = brandName?.trim();
   const trimmedIndustry = industry?.trim();
@@ -292,6 +354,18 @@ export function createLogoGeneratorIntroPayload({ brandName, industry, vibe, pal
   if (trimmedIndustry) context.industry = trimmedIndustry;
   if (trimmedVibe) context.vibe = trimmedVibe;
   if (normalizedPalette.length) context.palette = normalizedPalette.join(', ');
+
+  // Extract BrandVision user inputs and add to context
+  if (Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0) {
+    const brandVisionInputs = brandVisionHistory
+      .filter(m => m.role === 'user')
+      .map(m => m.content)
+      .filter(Boolean)
+      .join(' ');
+    if (brandVisionInputs) {
+      context.brandVision = brandVisionInputs;
+    }
+  }
 
   const introParts = [
     'You are the LogoGeneration agent for an interactive branding wizard.',
@@ -307,10 +381,15 @@ export function createLogoGeneratorIntroPayload({ brandName, industry, vibe, pal
 
   const message = introParts.join(' ');
 
+  // Include BrandVision history if available
+  const chat_history = Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0
+    ? [...brandVisionHistory]
+    : [];
+
   return {
     recipient_agent: 'LogoGenerator',
     message,
-    chat_history: [],
+    chat_history,
     context,
     file_ids: null,
     file_urls: null,
@@ -318,7 +397,7 @@ export function createLogoGeneratorIntroPayload({ brandName, industry, vibe, pal
   };
 }
 
-export function createLogoGeneratorPayload({ message, chatHistory, brandName, industry, vibe, paletteHexes }: LogoGeneratorPayloadArgs): AgencyPayload {
+export function createLogoGeneratorPayload({ message, chatHistory, brandName, industry, vibe, paletteHexes, brandVisionHistory }: LogoGeneratorPayloadArgs): AgencyPayload {
   const context: Record<string, string> = {};
   const trimmedBrand = brandName?.trim();
   const trimmedIndustry = industry?.trim();
@@ -329,11 +408,29 @@ export function createLogoGeneratorPayload({ message, chatHistory, brandName, in
   if (trimmedIndustry) context.industry = trimmedIndustry;
   if (trimmedVibe) context.vibe = trimmedVibe;
   if (normalizedPalette.length) context.palette = normalizedPalette.join(', ');
+
+  // Extract BrandVision user inputs and add to context
+  if (Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0) {
+    const brandVisionInputs = brandVisionHistory
+      .filter(m => m.role === 'user')
+      .map(m => m.content)
+      .filter(Boolean)
+      .join(' ');
+    if (brandVisionInputs) {
+      context.brandVision = brandVisionInputs;
+    }
+  }
+
+  // Prepend BrandVision history to chat history
+  const brandVision = Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0
+    ? [...brandVisionHistory]
+    : [];
+  const fullChatHistory = [...brandVision, ...chatHistory];
 
   return {
     recipient_agent: 'LogoGenerator',
     message: message?.trim() ?? '',
-    chat_history: chatHistory,
+    chat_history: fullChatHistory,
     context,
     file_ids: null,
     file_urls: null,
@@ -341,7 +438,7 @@ export function createLogoGeneratorPayload({ message, chatHistory, brandName, in
   };
 }
 
-export function createProductSelectorIntroPayload({ brandName, industry, vibe, paletteHexes }: ProductSelectorIntroArgs): AgencyPayload {
+export function createProductSelectorIntroPayload({ brandName, industry, vibe, paletteHexes, brandVisionHistory }: ProductSelectorIntroArgs): AgencyPayload {
   const context: Record<string, string> = {};
   const trimmedBrand = brandName?.trim();
   const trimmedIndustry = industry?.trim();
@@ -352,6 +449,18 @@ export function createProductSelectorIntroPayload({ brandName, industry, vibe, p
   if (trimmedIndustry) context.industry = trimmedIndustry;
   if (trimmedVibe) context.vibe = trimmedVibe;
   if (normalizedPalette.length) context.palette = normalizedPalette.join(', ');
+
+  // Extract BrandVision user inputs and add to context
+  if (Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0) {
+    const brandVisionInputs = brandVisionHistory
+      .filter(m => m.role === 'user')
+      .map(m => m.content)
+      .filter(Boolean)
+      .join(' ');
+    if (brandVisionInputs) {
+      context.brandVision = brandVisionInputs;
+    }
+  }
 
   const introParts = [
     'You are the ProductSelector agent for an interactive branding wizard.',
@@ -367,10 +476,15 @@ export function createProductSelectorIntroPayload({ brandName, industry, vibe, p
 
   const message = introParts.join(' ');
 
+  // Include BrandVision history if available
+  const chat_history = Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0
+    ? [...brandVisionHistory]
+    : [];
+
   return {
     recipient_agent: 'ProductSelector',
     message,
-    chat_history: [],
+    chat_history,
     context,
     file_ids: null,
     file_urls: null,
@@ -378,7 +492,7 @@ export function createProductSelectorIntroPayload({ brandName, industry, vibe, p
   };
 }
 
-export function createProductSelectorPayload({ message, chatHistory, brandName, industry, vibe, paletteHexes }: ProductSelectorPayloadArgs): AgencyPayload {
+export function createProductSelectorPayload({ message, chatHistory, brandName, industry, vibe, paletteHexes, brandVisionHistory }: ProductSelectorPayloadArgs): AgencyPayload {
   const context: Record<string, string> = {};
   const trimmedBrand = brandName?.trim();
   const trimmedIndustry = industry?.trim();
@@ -390,12 +504,30 @@ export function createProductSelectorPayload({ message, chatHistory, brandName, 
   if (trimmedVibe) context.vibe = trimmedVibe;
   if (normalizedPalette.length) context.palette = normalizedPalette.join(', ');
 
+  // Extract BrandVision user inputs and add to context
+  if (Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0) {
+    const brandVisionInputs = brandVisionHistory
+      .filter(m => m.role === 'user')
+      .map(m => m.content)
+      .filter(Boolean)
+      .join(' ');
+    if (brandVisionInputs) {
+      context.brandVision = brandVisionInputs;
+    }
+  }
+
   const baseMessage = message?.trim() ? message : 'Suggest products based on the provided context.';
+
+  // Prepend BrandVision history to chat history
+  const brandVision = Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0
+    ? [...brandVisionHistory]
+    : [];
+  const fullChatHistory = [...brandVision, ...chatHistory];
 
   return {
     recipient_agent: 'ProductSelector',
     message: baseMessage,
-    chat_history: chatHistory,
+    chat_history: fullChatHistory,
     context,
     file_ids: null,
     file_urls: null,
@@ -430,7 +562,7 @@ export function composeMockupGeneratorMessage({ prompt, brandName, industry, vib
   return parts.join('. ').trim();
 }
 
-export function createMockupGeneratorIntroPayload({ brandName, industry, vibe, paletteHexes }: MockupGeneratorIntroArgs): AgencyPayload {
+export function createMockupGeneratorIntroPayload({ brandName, industry, vibe, paletteHexes, brandVisionHistory }: MockupGeneratorIntroArgs): AgencyPayload {
   const context: Record<string, string> = {};
   const trimmedBrand = brandName?.trim();
   const trimmedIndustry = industry?.trim();
@@ -441,6 +573,18 @@ export function createMockupGeneratorIntroPayload({ brandName, industry, vibe, p
   if (trimmedIndustry) context.industry = trimmedIndustry;
   if (trimmedVibe) context.vibe = trimmedVibe;
   if (normalizedPalette.length) context.palette = normalizedPalette.join(', ');
+
+  // Extract BrandVision user inputs and add to context
+  if (Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0) {
+    const brandVisionInputs = brandVisionHistory
+      .filter(m => m.role === 'user')
+      .map(m => m.content)
+      .filter(Boolean)
+      .join(' ');
+    if (brandVisionInputs) {
+      context.brandVision = brandVisionInputs;
+    }
+  }
 
   const introParts = [
     'You are the MockupGenerator agent for an interactive branding wizard.',
@@ -456,10 +600,15 @@ export function createMockupGeneratorIntroPayload({ brandName, industry, vibe, p
 
   const message = introParts.join(' ');
 
+  // Include BrandVision history if available
+  const chat_history = Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0
+    ? [...brandVisionHistory]
+    : [];
+
   return {
     recipient_agent: 'MockupGenerator',
     message,
-    chat_history: [],
+    chat_history,
     context,
     file_ids: null,
     file_urls: null,
@@ -467,7 +616,7 @@ export function createMockupGeneratorIntroPayload({ brandName, industry, vibe, p
   };
 }
 
-export function createMockupGeneratorPayload({ message, chatHistory, brandName, industry, vibe, paletteHexes }: MockupGeneratorPayloadArgs): AgencyPayload {
+export function createMockupGeneratorPayload({ message, chatHistory, brandName, industry, vibe, paletteHexes, brandVisionHistory }: MockupGeneratorPayloadArgs): AgencyPayload {
   const context: Record<string, string> = {};
   const trimmedBrand = brandName?.trim();
   const trimmedIndustry = industry?.trim();
@@ -479,10 +628,28 @@ export function createMockupGeneratorPayload({ message, chatHistory, brandName, 
   if (trimmedVibe) context.vibe = trimmedVibe;
   if (normalizedPalette.length) context.palette = normalizedPalette.join(', ');
 
+  // Extract BrandVision user inputs and add to context
+  if (Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0) {
+    const brandVisionInputs = brandVisionHistory
+      .filter(m => m.role === 'user')
+      .map(m => m.content)
+      .filter(Boolean)
+      .join(' ');
+    if (brandVisionInputs) {
+      context.brandVision = brandVisionInputs;
+    }
+  }
+
+  // Prepend BrandVision history to chat history
+  const brandVision = Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0
+    ? [...brandVisionHistory]
+    : [];
+  const fullChatHistory = [...brandVision, ...chatHistory];
+
   return {
     recipient_agent: 'MockupGenerator',
     message: message?.trim() ?? '',
-    chat_history: chatHistory,
+    chat_history: fullChatHistory,
     context,
     file_ids: null,
     file_urls: null,
@@ -490,7 +657,7 @@ export function createMockupGeneratorPayload({ message, chatHistory, brandName, 
   };
 }
 
-export function createPaletteRefinementPayload({ prompt, paletteHexes, brandName, industry, vibe, chatHistory }: PaletteRefinementArgs): {
+export function createPaletteRefinementPayload({ prompt, paletteHexes, brandName, industry, vibe, chatHistory, brandVisionHistory }: PaletteRefinementArgs): {
   payload: AgencyPayload;
   inputText: string;
   userDisplay: string;
@@ -518,10 +685,26 @@ export function createPaletteRefinementPayload({ prompt, paletteHexes, brandName
   if (trimmedVibe) context.vibe = trimmedVibe;
   if (normalizedPalette.length) context.palette = normalizedPalette.join(', ');
 
+  // Extract BrandVision user inputs and add to context
+  if (Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0) {
+    const brandVisionInputs = brandVisionHistory
+      .filter(m => m.role === 'user')
+      .map(m => m.content)
+      .filter(Boolean)
+      .join(' ');
+    if (brandVisionInputs) {
+      context.brandVision = brandVisionInputs;
+    }
+  }
+
+  // Prepend BrandVision history to base history
+  const brandVision = Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0
+    ? [...brandVisionHistory]
+    : [];
   const baseHistory = Array.isArray(chatHistory) ? chatHistory : [];
   const chat_history = inputText
-    ? [...baseHistory, { role: 'user' as const, content: inputText }]
-    : baseHistory;
+    ? [...brandVision, ...baseHistory, { role: 'user' as const, content: inputText }]
+    : [...brandVision, ...baseHistory];
 
   const payload: AgencyPayload = {
     recipient_agent: 'ColorPaletteSelector',
