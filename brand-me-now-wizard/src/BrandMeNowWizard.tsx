@@ -270,7 +270,7 @@ export default function BrandMeNowWizard() {
   type Step =
     | "form" | "loading1" | "social" | "loading2" | "name" | "loading3"
     | "palette" | "loading4" | "logo" | "loading5" | "product" | "loading6"
-    | "preview" | "loading7" | "profit" | "loading8" | "book" | "done"
+    | "loading7" | "profit" | "loading8" | "book" | "done"
     | "mockup" | "loading9";
 
   const tips = [
@@ -413,8 +413,8 @@ export default function BrandMeNowWizard() {
     const next: Record<Step, Step> = {
       form: "loading1", loading1: "social", social: "loading2", loading2: "name",
       name: "loading3", loading3: "palette", palette: "loading4", loading4: "logo",
-      logo: "loading5", loading5: "product", product: "loading6", loading6: "preview",
-      preview: "loading9", loading9: "mockup", mockup: "loading7", loading7: "profit", profit: "loading8", loading8: "book",
+      logo: "loading5", loading5: "product", product: "loading6", loading6: "loading9",
+      loading9: "mockup", mockup: "loading7", loading7: "profit", profit: "loading8", loading8: "book",
       book: "done", done: "done",
     };
     if (step.startsWith("loading")) t = setTimeout(() => setStep(next[step]), 1200);
@@ -428,9 +428,6 @@ export default function BrandMeNowWizard() {
     }
     if (step === "social") {
       setSocialAgentIntro("I'll help summarize your brand vision and audience. Share any details, or let me scan your vibe to suggest directions.");
-    }
-    if (step === "preview") {
-      setPreviewAgentIntro("I can adjust the mock-up layout automatically. Tell me where to place the logo or the background you prefer.");
     }
     if (step === "profit") {
       setProfitAgentIntro("I'll estimate units and profit based on your inputs and assumptions. Ask questions or request a scenario.");
@@ -2282,7 +2279,64 @@ export default function BrandMeNowWizard() {
                 introError={paletteIntroError}
                 loadingText={paletteIntroLoading ? paletteIntroLoadingText : undefined}
               />
+              <div className="mt-6">
+                <div className="text-sm font-medium text-slate-700 mb-3 text-center">Choose a pre-defined palette:</div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-3xl mx-auto">
+                  {Palettes.slice(0, 4).map((p, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        setPaletteColors(p);
+                        setPaletteSelected(true);
+                        setPaletteScanSucceeded(true);
+                      }}
+                      className={`rounded-2xl border p-4 hover:shadow-sm transition ${
+                        paletteColors.length === p.length && paletteColors.every((c, i) => c === p[i])
+                          ? "ring-2 ring-[#1ae7f6] border-[#1ae7f6]"
+                          : "border-slate-200"
+                      }`}
+                    >
+                      <div className="flex gap-2 justify-center">
+                        {p.map(c => (
+                          <div key={c} className="h-8 w-8 rounded" style={{background:c}}/>
+                        ))}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                {!showMorePalettes && Palettes.length > 4 && (
+                  <div className="mt-4 flex justify-center">
+                    <Chip onClick={() => setShowMorePalettes(true)}>More..</Chip>
+                  </div>
+                )}
+                {showMorePalettes && Palettes.length > 4 && (
+                  <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 max-w-3xl mx-auto">
+                    {Palettes.slice(4).map((p, idx) => (
+                      <button
+                        key={idx + 4}
+                        onClick={() => {
+                          setPaletteColors(p);
+                          setPaletteSelected(true);
+                          setPaletteScanSucceeded(true);
+                        }}
+                        className={`rounded-2xl border p-4 hover:shadow-sm transition ${
+                          paletteColors.length === p.length && paletteColors.every((c, i) => c === p[i])
+                            ? "ring-2 ring-[#1ae7f6] border-[#1ae7f6]"
+                            : "border-slate-200"
+                        }`}
+                      >
+                        <div className="flex gap-2 justify-center">
+                          {p.map(c => (
+                            <div key={c} className="h-8 w-8 rounded" style={{background:c}}/>
+                          ))}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <div className="mt-6 max-w-3xl mx-auto">
+                <div className="text-sm font-medium text-slate-700 mb-3 text-center">Or generate a custom palette:</div>
                 <StandardTextInput
                   value={paletteUserPrompt}
                   onChange={(v)=>setPaletteUserPrompt(v)}
@@ -2329,7 +2383,7 @@ export default function BrandMeNowWizard() {
                   <button
                     type="button"
                     onClick={handlePaletteAnalyze}
-                    disabled={paletteLoading}
+                    disabled={paletteLoading || !paletteUserPrompt.trim()}
                     className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {paletteLoading ? (
@@ -2554,47 +2608,6 @@ export default function BrandMeNowWizard() {
 
           {step === "loading6" && (<LoadingScreen key="loading6" title="Rendering your mock‑up" subtitle="Applying your logo to the product…" />)}
 
-          {step === "preview" && (
-            <StepPanel key="preview">
-              <h2 className="text-2xl md:text-3xl font-semibold text-center">Mock‑Up Preview</h2>
-              <p className="mt-2 text-center text-gray-600">Nudge controls for quick tweaks.</p>
-              <div className="mt-6 grid md:grid-cols-2 gap-4">
-                {previews.map((src)=> (
-                  <div key={src} className={`rounded-2xl border overflow-hidden relative ${logoOverlay.bg==='dark'?'bg-black':'bg-white'}`}>
-                    <img src={src} alt="preview" className="w-full h-auto" width="1024" height="1024" decoding="async" fetchPriority="high" sizes="(max-width: 768px) 100vw, 1024px" style={{ filter: logoOverlay.bg==='dark' ? 'brightness(0.85)' : 'brightness(1)' }} />
-                    {chosenLogo && (
-                      <img
-                        src={chosenLogo}
-                        alt="logo overlay"
-                        className="absolute"
-                        decoding="async"
-                        style={{
-                          top: `${logoOverlay.y}%`,
-                          left: `${logoOverlay.x}%`,
-                          transform: `translate(-50%, -50%) scale(${logoOverlay.scale})`,
-                          width: '40%',
-                          opacity: 0.95,
-                        }}
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2 justify-center">
-                <Chip onClick={()=> setLogoOverlay(v => ({...v, y: Math.max(0, v.y - 5)}))}>Logo ↑</Chip>
-                <Chip onClick={()=> setLogoOverlay(v => ({...v, y: Math.min(100, v.y + 5)}))}>Logo ↓</Chip>
-                <Chip onClick={()=> setLogoOverlay(v => ({...v, scale: Math.min(3, Number((v.scale * 1.1).toFixed(2)))}))}>Logo Bigger</Chip>
-                <Chip onClick={()=> setLogoOverlay(v => ({...v, scale: Math.max(0.5, Number((v.scale * 0.9).toFixed(2)))}))}>Logo Smaller</Chip>
-                <Chip onClick={()=> setLogoOverlay(v => ({...v, bg:'dark'}))}>BG: Dark</Chip>
-                <Chip onClick={()=> setLogoOverlay(v => ({...v, bg:'light'}))}>BG: Light</Chip>
-              </div>
-              <div className="mt-8 flex items-center justify-between">
-                <SecondaryButton onClick={()=>setStep("product")}>Back</SecondaryButton>
-                <PrimaryButton onClick={()=>setStep("loading9")}>Looks Good</PrimaryButton>
-              </div>
-            </StepPanel>
-          )}
-
           {step === "loading7" && (<LoadingScreen key="loading7" title="Calculating profit" subtitle="Crunching your numbers…" />)}
 
           {step === "loading9" && (<LoadingScreen key="loading9" title="Preparing mockup generation" subtitle="This can take a few seconds…" />)}
@@ -2684,7 +2697,7 @@ export default function BrandMeNowWizard() {
                 </div>
               )}
               <div className="mt-8 flex items-center justify-between">
-                <SecondaryButton onClick={()=>setStep("preview")}>Back</SecondaryButton>
+                <SecondaryButton onClick={()=>setStep("product")}>Back</SecondaryButton>
                 <PrimaryButton onClick={()=>setStep("loading7")} disabled={!chosenMockup}>Continue</PrimaryButton>
               </div>
             </StepPanel>
@@ -2706,7 +2719,7 @@ export default function BrandMeNowWizard() {
                 ))}
               </div>
               <div className="mt-6 flex items-center justify-between">
-                <SecondaryButton onClick={()=>setStep("preview")}>Back</SecondaryButton>
+                <SecondaryButton onClick={()=>setStep("mockup")}>Back</SecondaryButton>
                 <PrimaryButton onClick={async()=>{
                   const r = await MockAPI.estimate(profit);
                   setProfit({...profit, estUnits:r.estUnits, estProfit:r.estProfit});
