@@ -1231,7 +1231,7 @@ export default function BrandMeNowWizard() {
               <h2 className="text-2xl md:text-3xl font-semibold text-center mt-4">Vision Input / Social Scan</h2>
               <div className="mt-6 max-w-3xl mx-auto">
                 <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
-                  <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-400">
+                  <div className="flex items-center gap-2 text-sm uppercase tracking-wide text-slate-400">
                     <Sparkles className="h-4 w-4" />
                     <span>Getting your brand vision ready…</span>
                   </div>
@@ -1251,8 +1251,9 @@ export default function BrandMeNowWizard() {
                   placeholder="Type your brand vision (e.g., 'Luxury beauty, soft gold, Gen Z wellness')"
                   maxLength={200}
                   multiline
+                  className="text-lg"
                 />
-                <p className="mt-2 text-center text-xs text-slate-500">Tip: {tips[currentTipIndex].replace(/^Tip:\s*/i, '')}</p>
+                <p className="mt-2 text-center text-md text-slate-500">Tip: {tips[currentTipIndex].replace(/^Tip:\s*/i, '')}</p>
                 {(socialStreamingText || socialFinalMessage || socialLoading) && (
                   <div className="mt-6">
                     <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
