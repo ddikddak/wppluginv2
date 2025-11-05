@@ -1479,6 +1479,8 @@ export default function BrandMeNowWizard() {
         vibe,
         paletteHexes: normalizedPalette,
         brandVisionHistory,
+        selectedSkus: Array.from(selectedSkus),
+        selectedLogoUrl: chosenLogo || undefined,
       });
 
       setMockupAgentMessage("");
@@ -1884,12 +1886,38 @@ export default function BrandMeNowWizard() {
         brandVisionHistory,
       });
 
+      let accumulatedStreamText = '';
       const { message: finalMessage, helpers, skus } = await requestAgencyResponse({
         payload: streamPayload,
         onStream: (txt) => {
+          accumulatedStreamText = txt;
           setProductStreamingText(txt);
           setProductAgentMessage(txt);
           setProductScanSucceeded(true);
+          
+          // Try to extract SKUs from streaming text
+          try {
+            const parsed = JSON.parse(txt);
+            const extractedSkus = parsed.SKUs || parsed.skus || [];
+            if (Array.isArray(extractedSkus) && extractedSkus.length) {
+              const unique = Array.from(new Set(extractedSkus.map((s: any) => String(s).trim()).filter(Boolean)));
+              setProductSkus(unique);
+            }
+          } catch (_) {
+            // Not valid JSON yet, try manual extraction
+            const skusMatch = txt.match(/"SKUs"\s*:\s*\[(.*?)\]/s);
+            if (skusMatch) {
+              try {
+                const skusArray = JSON.parse(`[${skusMatch[1]}]`);
+                if (Array.isArray(skusArray) && skusArray.length) {
+                  const unique = Array.from(new Set(skusArray.map((s: any) => String(s).trim()).filter(Boolean)));
+                  setProductSkus(unique);
+                }
+              } catch (_) {
+                // Partial JSON, ignore
+              }
+            }
+          }
         },
       });
 
@@ -1900,14 +1928,69 @@ export default function BrandMeNowWizard() {
         setProductChatHistory(prev => [...prev, { role: 'assistant', text: finalMessage }]);
       }
 
-      // Extract and store SKUs from structured output
-      if (skus && Array.isArray(skus) && skus.length > 0) {
-        setProductSkus(skus);
-        // Optionally auto-select all SKUs, or leave them unselected
-        // setSelectedSkus(new Set(skus));
-      } else if (helpers && Array.isArray(helpers) && helpers.length > 0) {
-        // Fallback: if no SKUs but we have helpers, use helpers as SKUs
-        setProductSkus(helpers);
+      // Extract SKUs from structured response
+      let extractedSkus: string[] = [];
+      
+      // First try skus from response
+      if (Array.isArray(skus) && skus.length) {
+        extractedSkus = Array.from(new Set(skus.map(s => String(s).trim()).filter(Boolean)));
+      }
+      
+      // Try helpers as fallback
+      if (!extractedSkus.length && Array.isArray(helpers) && helpers.length) {
+        extractedSkus = Array.from(new Set(helpers.map(s => String(s).trim()).filter(Boolean)));
+      }
+      
+      // Try to extract from final message JSON
+      if (!extractedSkus.length) {
+        try {
+          const parsed = JSON.parse(finalMessage);
+          const skusFromMessage = parsed.SKUs || parsed.skus || [];
+          if (Array.isArray(skusFromMessage) && skusFromMessage.length) {
+            extractedSkus = Array.from(new Set(skusFromMessage.map((s: any) => String(s).trim()).filter(Boolean)));
+          }
+        } catch (_) {
+          // Try manual extraction from final message
+          const skusMatch = finalMessage.match(/"SKUs"\s*:\s*\[(.*?)\]/s);
+          if (skusMatch) {
+            try {
+              const skusArray = JSON.parse(`[${skusMatch[1]}]`);
+              if (Array.isArray(skusArray) && skusArray.length) {
+                extractedSkus = Array.from(new Set(skusArray.map((s: any) => String(s).trim()).filter(Boolean)));
+              }
+            } catch (_) {
+              // Not valid, ignore
+            }
+          }
+        }
+      }
+      
+      // Also try from accumulated streaming text if not found yet
+      if (!extractedSkus.length && accumulatedStreamText) {
+        try {
+          const parsed = JSON.parse(accumulatedStreamText);
+          const skusFromStream = parsed.SKUs || parsed.skus || [];
+          if (Array.isArray(skusFromStream) && skusFromStream.length) {
+            extractedSkus = Array.from(new Set(skusFromStream.map((s: any) => String(s).trim()).filter(Boolean)));
+          }
+        } catch (_) {
+          // Try manual extraction from streaming text
+          const skusMatch = accumulatedStreamText.match(/"SKUs"\s*:\s*\[(.*?)\]/s);
+          if (skusMatch) {
+            try {
+              const skusArray = JSON.parse(`[${skusMatch[1]}]`);
+              if (Array.isArray(skusArray) && skusArray.length) {
+                extractedSkus = Array.from(new Set(skusArray.map((s: any) => String(s).trim()).filter(Boolean)));
+              }
+            } catch (_) {
+              // Not valid, ignore
+            }
+          }
+        }
+      }
+      
+      if (extractedSkus.length) {
+        setProductSkus(extractedSkus);
       }
 
       return finalMessage;
@@ -2652,60 +2735,34 @@ export default function BrandMeNowWizard() {
                 />
                 {productSkus.length > 0 && (
                   <div className="mt-6">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="text-sm font-medium text-slate-700">
-                        Recommended Products ({selectedSkus.size} selected)
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={handleSelectAllSkus}
-                          disabled={productLoading}
-                          className="text-xs px-3 py-1 rounded-lg border border-slate-300 hover:border-slate-400 text-slate-700 disabled:cursor-not-allowed disabled:opacity-60 transition"
-                        >
-                          Select All
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleDeselectAllSkus}
-                          disabled={productLoading}
-                          className="text-xs px-3 py-1 rounded-lg border border-slate-300 hover:border-slate-400 text-slate-700 disabled:cursor-not-allowed disabled:opacity-60 transition"
-                        >
-                          Deselect All
-                        </button>
-                      </div>
+                    <div className="text-sm font-medium text-slate-700 mb-3">
+                      {productSkus.length === 1 ? "Recommended Product:" : "Recommended Products:"}
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {productSkus.map((sku) => {
-                        const isSelected = selectedSkus.has(sku);
+                      {productSkus.map((skuFull) => {
+                        // Parse SKU string like "ROC812 - Neuro Plus Brain and Focus"
+                        // Extract SKU code (before " - ") and product name (after " - ")
+                        const skuMatch = skuFull.match(/^([A-Z0-9]+(?:\s+[A-Z0-9]+)*)\s*-\s*(.+)$/);
+                        const skuCode = skuMatch ? skuMatch[1].trim() : skuFull.split(' - ')[0] || skuFull;
+                        const productName = skuMatch ? skuMatch[2].trim() : (skuFull.includes(' - ') ? skuFull.split(' - ').slice(1).join(' - ') : skuFull);
+                        const isSelected = selectedSkus.has(skuFull);
                         return (
                           <button
-                            key={sku}
+                            key={skuFull}
                             type="button"
-                            onClick={() => handleSkuToggle(sku)}
+                            onClick={() => handleSkuToggle(skuFull)}
                             disabled={productLoading}
-                            className={`relative rounded-xl border-2 p-4 text-left transition-all ${
+                            className={`rounded-xl border p-4 text-left transition ${
                               isSelected
-                                ? "border-[#1ae7f6] bg-[#1ae7f6]/5 shadow-sm"
-                                : "border-slate-200 hover:border-slate-300 bg-white"
+                                ? 'border-[#1ae7f6] bg-[#1ae7f6]/10 ring-2 ring-[#1ae7f6]'
+                                : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'
                             } disabled:cursor-not-allowed disabled:opacity-60`}
                           >
-                            <div className="flex items-start gap-3">
-                              <div className={`flex-shrink-0 mt-1 w-5 h-5 rounded border-2 flex items-center justify-center ${
-                                isSelected
-                                  ? "border-[#1ae7f6] bg-[#1ae7f6]"
-                                  : "border-slate-300"
-                              }`}>
-                                {isSelected && (
-                                  <Check className="w-3 h-3 text-white" />
-                                )}
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className="font-medium text-slate-900 text-sm">
-                                  {sku}
-                                </div>
-                              </div>
-                            </div>
+                            <div className="font-medium text-slate-900">{productName}</div>
+                            <div className="mt-1 text-xs text-slate-500">SKU: {skuCode}</div>
+                            {isSelected && (
+                              <div className="mt-1 text-xs text-[#1ae7f6]">✓ Selected</div>
+                            )}
                           </button>
                         );
                       })}

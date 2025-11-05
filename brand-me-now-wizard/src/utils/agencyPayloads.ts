@@ -104,6 +104,8 @@ type MockupGeneratorPayloadArgs = {
   vibe?: string;
   paletteHexes?: string[];
   brandVisionHistory?: AgencyMessage[];
+  selectedSkus?: string[];
+  selectedLogoUrl?: string;
 };
 
 type PaletteRefinementArgs = {
@@ -616,7 +618,7 @@ export function createMockupGeneratorIntroPayload({ brandName, industry, vibe, p
   };
 }
 
-export function createMockupGeneratorPayload({ message, chatHistory, brandName, industry, vibe, paletteHexes, brandVisionHistory }: MockupGeneratorPayloadArgs): AgencyPayload {
+export function createMockupGeneratorPayload({ message, chatHistory, brandName, industry, vibe, paletteHexes, brandVisionHistory, selectedSkus, selectedLogoUrl }: MockupGeneratorPayloadArgs): AgencyPayload {
   const context: Record<string, string> = {};
   const trimmedBrand = brandName?.trim();
   const trimmedIndustry = industry?.trim();
@@ -627,6 +629,16 @@ export function createMockupGeneratorPayload({ message, chatHistory, brandName, 
   if (trimmedIndustry) context.industry = trimmedIndustry;
   if (trimmedVibe) context.vibe = trimmedVibe;
   if (normalizedPalette.length) context.palette = normalizedPalette.join(', ');
+
+  // Add selected SKUs to context
+  if (Array.isArray(selectedSkus) && selectedSkus.length > 0) {
+    context.selectedSkus = selectedSkus.join(', ');
+  }
+
+  // Add selected logo URL to context
+  if (selectedLogoUrl?.trim()) {
+    context.selectedLogoUrl = selectedLogoUrl.trim();
+  }
 
   // Extract BrandVision user inputs and add to context
   if (Array.isArray(brandVisionHistory) && brandVisionHistory.length > 0) {
