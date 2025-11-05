@@ -6,14 +6,156 @@ import { analyzeImageFromUrl, colorDistanceHex, dominantPaletteColor, comparePal
 import {
   createPaletteIntroPayload,
   createBrandVisionPayload,
-  composeNameSelectorMessage,
   composeLogoGeneratorMessage,
   createLogoGeneratorIntroPayload,
   createLogoGeneratorPayload,
   createNameIntroPayload,
+  createNamePayload,
 } from './utils/agencyPayloads';
 import { postAgencyRespond, streamAgencyRespond, requestAgencyResponse, extractMessageFromSSE } from './utils/backendHandler';
 import type { AgencyMessage } from './utils/backendHandler';
+
+// Reusable widgets for agent-driven steps
+function AgentIntroWidget({ 
+  introMessage, 
+  introError, 
+  loadingText 
+}: { 
+  introMessage?: string; 
+  introError?: string | null; 
+  loadingText?: string;
+}) {
+  return (
+    <div className="mt-6 max-w-3xl mx-auto">
+      <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
+        {loadingText && (
+          <div className="flex items-center gap-2 text-sm uppercase tracking-wide text-slate-400">
+            <Sparkles className="h-4 w-4" />
+            <span>{loadingText}</span>
+          </div>
+        )}
+        <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
+          {introMessage || introError || null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function filterToolCalls(text: string): string {
+  if (!text) return text;
+  // Replace content inside curly braces with "Thinking"
+  // This handles nested braces and multiple occurrences
+  return text.replace(/\{[^}]*\}/g, '\nThinking\n\n');
+}
+
+function removeFirstToolCall(text: string): string {
+  if (!text || typeof text !== 'string') return text;
+  
+  const firstBrace = text.indexOf('{');
+  if (firstBrace === -1) return text;
+  
+  let braceCount = 0;
+  let endIndex = -1;
+  for (let i = firstBrace; i < text.length; i++) {
+    if (text[i] === '{') braceCount++;
+    if (text[i] === '}') braceCount--;
+    if (braceCount === 0) {
+      endIndex = i + 1;
+      break;
+    }
+  }
+  
+  if (endIndex > 0) {
+    const firstJson = text.substring(firstBrace, endIndex);
+    // Check if this looks like a tool call (contains brand_name, prompt, etc.)
+    if (firstJson.includes('"brand_name"') || firstJson.includes('"prompt"') || firstJson.includes('"output_format"')) {
+      // Remove the first JSON object and any whitespace after it
+      return text.substring(endIndex).trim();
+    }
+  }
+  
+  return text;
+}
+
+function AgentMessageWidget({ 
+  streamingText, 
+  finalMessage, 
+  loading, 
+  loadingText 
+}: { 
+  streamingText?: string; 
+  finalMessage?: string; 
+  loading?: boolean;
+  loadingText?: string;
+}) {
+  if (!streamingText && !finalMessage && !loading) return null;
+  
+  const displayText = finalMessage || streamingText || (loading ? (loadingText || 'Analyzing your brand vision…') : '');
+  const filteredText = filterToolCalls(displayText);
+  
+  return (
+    <div className="mt-6">
+      <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
+        <div className="text-xs uppercase tracking-wide text-slate-400">
+          <Sparkles className="h-4 w-4" />
+        </div>
+        <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
+          {filteredText}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RefinementWidget({
+  refinePrompt,
+  onRefinePromptChange,
+  onRefine,
+  loading,
+  placeholder,
+  refineButtonText
+}: {
+  refinePrompt: string;
+  onRefinePromptChange: (v: string) => void;
+  onRefine: () => void;
+  loading: boolean;
+  placeholder: string;
+  refineButtonText: string;
+}) {
+  return (
+    <div className="mt-6">
+      <div className="text-sm font-medium text-slate-700 mb-1">Need revisions?</div>
+      <StandardTextInput
+        value={refinePrompt}
+        onChange={onRefinePromptChange}
+        placeholder={placeholder}
+        multiline
+        maxLength={220}
+      />
+      <div className="mt-3 flex justify-end">
+        <button
+          type="button"
+          onClick={onRefine}
+          disabled={loading || !refinePrompt.trim()}
+          className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {loading ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Updating…
+            </>
+          ) : (
+            <>
+              <Sparkles className="mr-2 h-4 w-4" />
+              {refineButtonText}
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function BrandMeNowWizard() {
   type Step =
@@ -31,7 +173,6 @@ export default function BrandMeNowWizard() {
   const paletteIntroFallback = "Time to pick your brand colors! This will influence your logos and labels. You can choose from examples below or enter your own colors (e.g., 'blue, green, yellow').";
   const paletteIntroLoadingText = "Preparing color guidance…";
   const logoIntroFallback = "Let's craft your logo. Share any style cues and I'll generate options that respect your palette.";
-  const logoIntroLoadingText = "Preparing logo guidance…";
 
   const [step, setStep] = useState<Step>("form");
   const [user, setUser] = useState({ name: "", email: "", ig: "" });
@@ -53,26 +194,37 @@ export default function BrandMeNowWizard() {
   const [logoError, setLogoError] = useState<string>("");
   // Agent-driven logo conversation states
   const [logoUserPrompt, setLogoUserPrompt] = useState<string>("");
-  const [logoAgentIntro, setLogoAgentIntro] = useState<string>("");
   const [logoIntroLoading, setLogoIntroLoading] = useState<boolean>(false);
+  const [logoIntroMessage, setLogoIntroMessage] = useState<string>("");
+  const [logoIntroError, setLogoIntroError] = useState<string | null>(null);
   const [logoAgentMessage, setLogoAgentMessage] = useState<string>("");
   const [logoChatHistory, setLogoChatHistory] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
   // Agent-driven palette conversation states
   const [paletteUserPrompt, setPaletteUserPrompt] = useState<string>("");
+  const [paletteRefinePrompt, setPaletteRefinePrompt] = useState<string>("");
   const [paletteAgentIntro, setPaletteAgentIntro] = useState<string>("");
   const [paletteIntroMessage, setPaletteIntroMessage] = useState<string>("");
+  const [paletteIntroError, setPaletteIntroError] = useState<string | null>(null);
   const [paletteIntroLoading, setPaletteIntroLoading] = useState<boolean>(false);
   const [paletteAgentMessage, setPaletteAgentMessage] = useState<string>("");
+  const [paletteStreamingText, setPaletteStreamingText] = useState<string>("");
+  const [paletteFinalMessage, setPaletteFinalMessage] = useState<string>("");
   const [paletteChatHistory, setPaletteChatHistory] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
   const [paletteLoading, setPaletteLoading] = useState<boolean>(false);
+  const [paletteScanSucceeded, setPaletteScanSucceeded] = useState<boolean>(false);
   // Agent-driven name conversation states
   const [nameUserPrompt, setNameUserPrompt] = useState<string>("");
-  const [nameAgentIntro, setNameAgentIntro] = useState<string>("");
   const [nameAgentMessage, setNameAgentMessage] = useState<string>("");
   const [nameChatHistory, setNameChatHistory] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
   const [nameLoading, setNameLoading] = useState<boolean>(false);
   const [nameSuggestions, setNameSuggestions] = useState<string[]>([]);
   const [nameScanSucceeded, setNameScanSucceeded] = useState<boolean>(false);
+  const [nameStreamingText, setNameStreamingText] = useState<string>("");
+  const [nameFinalMessage, setNameFinalMessage] = useState<string>("");
+  const [nameRefinePrompt, setNameRefinePrompt] = useState<string>("");
+  const [nameIntroMessage, setNameIntroMessage] = useState<string>("");
+  const [nameIntroLoading, setNameIntroLoading] = useState<boolean>(false);
+  const [nameIntroError, setNameIntroError] = useState<string | null>(null);
   // Agent-driven social conversation states (BrandVision)
   const [socialUserPrompt, setSocialUserPrompt] = useState<string>("");
   const [socialAgentIntro, setSocialAgentIntro] = useState<string>("");
@@ -122,7 +274,6 @@ export default function BrandMeNowWizard() {
   const BOOKING_SERVICE_ID = 'UL9SNgWU3gjlVPKyzTMv';
   const BOOKING_IFRAME_SRC = `https://api.leadconnectorhq.com/widget/booking/${BOOKING_SERVICE_ID}?iframeId=${BOOKING_IFRAME_ID}`;
 
-  const paletteSubheaderText = paletteIntroMessage || (paletteIntroLoading ? paletteIntroLoadingText : paletteIntroFallback);
 
   useEffect(() => {
     let t: any;
@@ -142,9 +293,6 @@ export default function BrandMeNowWizard() {
     if (step === "palette") {
       setPaletteAgentIntro("I can refine your palette to better match your vibe and industry. Describe your desired color direction and click Refine.");
     }
-    if (step === "name") {
-      setNameAgentIntro("Tell me the vibe or constraints (e.g., short, unique, available domain). I'll suggest names and we'll auto-check availability.");
-    }
     if (step === "social") {
       setSocialAgentIntro("I'll help summarize your brand vision and audience. Share any details, or let me scan your vibe to suggest directions.");
     }
@@ -163,42 +311,70 @@ export default function BrandMeNowWizard() {
     if (step !== 'logo') {
       return;
     }
-    if (logoIntroLoading || logoChatHistory.length) {
+    // Only skip if already loading or if we already have an intro message
+    if (logoIntroLoading || logoIntroMessage) {
       return;
     }
 
+    setLogoIntroError(null);
+    setLogoIntroMessage("");
+
     let cancelled = false;
-    let latestText = '';
+    let latestIntroText = "";
 
-    const normalizedPalette = normalizePaletteHexes(paletteColors);
-    const payload = createLogoGeneratorIntroPayload({
-      brandName,
-      industry,
-      vibe,
-      paletteHexes: normalizedPalette,
-    });
-
-    const run = async () => {
+    const runIntro = async () => {
       setLogoIntroLoading(true);
-      setLogoAgentIntro('');
       try {
-        const { message } = await requestAgencyResponse({
-          payload,
-          onStream: (txt) => {
-            if (cancelled) return;
-            latestText = txt;
-            setLogoAgentIntro(txt);
-          },
+        const normalizedPalette = normalizePaletteHexes(paletteColors);
+        const payload = createLogoGeneratorIntroPayload({
+          brandName,
+          industry,
+          vibe,
+          paletteHexes: normalizedPalette,
         });
 
+        const streamResult = await streamAgencyRespond(payload, (chunk) => {
+          if (cancelled) return;
+          if (chunk.type === 'delta') {
+            latestIntroText = latestIntroText ? `${latestIntroText}${chunk.message}` : chunk.message;
+            setLogoIntroMessage(latestIntroText);
+          } else if (chunk.type === 'message') {
+            // Replace with full message when received
+            latestIntroText = chunk.message || latestIntroText;
+            setLogoIntroMessage(latestIntroText);
+          }
+        });
+
+        if (!latestIntroText) {
+          const streamText = extractMessageFromSSE(streamResult?.text || '');
+          if (streamText) {
+            latestIntroText = streamText;
+          }
+        }
+
+        if (!latestIntroText) {
+          const jr = await postAgencyRespond(payload);
+          const j = jr?.data ?? jr;
+          const fallback = extractMessageFromSSE(j?.message || j?.data?.message || '');
+          if (fallback) {
+            latestIntroText = fallback;
+          }
+        }
+
         if (cancelled) return;
-        const finalMessage = (message?.trim() || latestText || logoIntroFallback);
-        setLogoAgentIntro(finalMessage);
-        setLogoChatHistory([{ role: 'assistant', text: finalMessage }]);
-      } catch (_) {
-        if (cancelled) return;
-        setLogoAgentIntro(logoIntroFallback);
-        setLogoChatHistory([{ role: 'assistant', text: logoIntroFallback }]);
+
+        if (latestIntroText) {
+          setLogoIntroMessage(latestIntroText);
+          setLogoChatHistory([{ role: 'assistant', text: latestIntroText }]);
+        } else {
+          setLogoIntroMessage(logoIntroFallback);
+          setLogoChatHistory([{ role: 'assistant', text: logoIntroFallback }]);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setLogoIntroError("I couldn't reach LogoGenerator right now. Share your style preferences to get started.");
+          setLogoIntroMessage("");
+        }
       } finally {
         if (!cancelled) {
           setLogoIntroLoading(false);
@@ -206,12 +382,12 @@ export default function BrandMeNowWizard() {
       }
     };
 
-    run();
+    runIntro();
 
     return () => {
       cancelled = true;
     };
-  }, [step, brandName, industry, vibe, paletteColors, logoChatHistory.length, logoIntroLoading, logoIntroFallback]);
+  }, [step, brandName, industry, vibe, paletteColors, logoIntroLoading, logoIntroMessage, logoIntroFallback]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -294,7 +470,14 @@ export default function BrandMeNowWizard() {
 
         const streamResult = await streamAgencyRespond(payload, (chunk) => {
           if (cancelled) return;
-          if (chunk.type === 'delta' || chunk.type === 'message') {
+          if (chunk.type === 'delta') {
+            // Accumulate delta chunks
+            if (chunk.message) {
+              latestIntroText += chunk.message;
+            }
+            setSocialIntroMessage(latestIntroText);
+          } else if (chunk.type === 'message') {
+            // Replace with full message when received
             latestIntroText = chunk.message || latestIntroText;
             setSocialIntroMessage(latestIntroText);
           }
@@ -314,6 +497,12 @@ export default function BrandMeNowWizard() {
           if (fallback) {
             latestIntroText = fallback;
           }
+        }
+
+        if (!latestIntroText) {
+          // Default message when BrandVision doesn't load
+          const greetingName = brandName?.trim() || 'a';
+          latestIntroText = `Hi, ${greetingName}. Now let's define your brand vision to create something amazing.\n\nThis helps me generate personalized palettes, logos, and suggestions.\n\nTell me about your brand style, mood, and audience.`;
         }
 
         if (!cancelled && latestIntroText) {
@@ -339,32 +528,176 @@ export default function BrandMeNowWizard() {
   }, [step, brandName, industry, vibe, user.ig]);
 
   useEffect(() => {
+    if (step !== "name") return;
+
+    setNameIntroLoading(false);
+    setNameIntroError(null);
+    setNameIntroMessage("");
+
+    let cancelled = false;
+    let latestIntroText = "";
+
+    const runIntro = async () => {
+      setNameIntroLoading(true);
+      try {
+        const payload = createNameIntroPayload({
+          brandName,
+          industry,
+          vibe,
+          instagram: user.ig,
+        });
+
+        const streamResult = await streamAgencyRespond(payload, (chunk) => {
+          if (cancelled) return;
+          if (chunk.type === 'delta') {
+            // Accumulate delta chunks
+            if (chunk.message) {
+              latestIntroText += chunk.message;
+            }
+            setNameIntroMessage(latestIntroText);
+          } else if (chunk.type === 'message') {
+            // Replace with full message when received
+            latestIntroText = chunk.message || latestIntroText;
+            setNameIntroMessage(latestIntroText);
+          }
+        });
+
+        if (!latestIntroText) {
+          const streamText = extractMessageFromSSE(streamResult?.text || '');
+          if (streamText) {
+            latestIntroText = streamText;
+          }
+        }
+
+        if (!latestIntroText) {
+          const jr = await postAgencyRespond(payload);
+          const j = jr?.data ?? jr;
+          const fallback = extractMessageFromSSE(j?.message || j?.data?.message || '');
+          if (fallback) {
+            latestIntroText = fallback;
+          }
+        }
+
+        if (!latestIntroText) {
+          // Default message when NameSelector doesn't load
+          const greetingName = brandName?.trim() || 'a';
+          latestIntroText = `Hi, ${greetingName}. Let's find the perfect brand name for you.\n\nI'll brainstorm names that match your vibe and automatically check domain availability.\n\nShare your naming preferences, style, or any keywords you want included.`;
+        }
+
+        if (!cancelled && latestIntroText) {
+          setNameIntroMessage(latestIntroText);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setNameIntroError("I couldn't reach NameSelector right now. Tell me about your naming preferences to get started.");
+          setNameIntroMessage("");
+        }
+      } finally {
+        if (!cancelled) {
+          setNameIntroLoading(false);
+        }
+      }
+    };
+
+    runIntro();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [step, brandName, industry, vibe, user.ig]);
+
+  useEffect(() => {
     if (step !== "palette") return;
     setPaletteIntroMessage("");
+    setPaletteIntroError(null);
     setPaletteIntroLoading(false);
     let cancelled = false;
+
+    const extractMessageFromJson = (text: string): string => {
+      if (!text || typeof text !== 'string') return text || '';
+      
+      // Try to parse as JSON and extract message field
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === 'object' && parsed.message) {
+          return String(parsed.message);
+        }
+      } catch (_) {
+        // Not valid JSON (might be partial during streaming), try to extract message field
+        // Look for "message": "..." pattern, handling escaped quotes
+        const messageKeyIndex = text.indexOf('"message"');
+        if (messageKeyIndex !== -1) {
+          const afterKey = text.substring(messageKeyIndex + 9); // length of "message"
+          const colonIndex = afterKey.indexOf(':');
+          if (colonIndex !== -1) {
+            const afterColon = afterKey.substring(colonIndex + 1).trim();
+            // Check if it's a string value (starts with ")
+            if (afterColon.startsWith('"')) {
+              // Find the closing quote, handling escaped quotes
+              let endIndex = 1;
+              let escaped = false;
+              while (endIndex < afterColon.length) {
+                const char = afterColon[endIndex];
+                if (escaped) {
+                  escaped = false;
+                  endIndex++;
+                  continue;
+                }
+                if (char === '\\') {
+                  escaped = true;
+                  endIndex++;
+                  continue;
+                }
+                if (char === '"') {
+                  // Found the closing quote
+                  const messageValue = afterColon.substring(1, endIndex);
+                  // Unescape common escape sequences
+                  return messageValue
+                    .replace(/\\"/g, '"')
+                    .replace(/\\n/g, '\n')
+                    .replace(/\\t/g, '\t')
+                    .replace(/\\\\/g, '\\');
+                }
+                endIndex++;
+              }
+            }
+          }
+        }
+      }
+      
+      return text;
+    };
 
     const runPaletteIntro = async () => {
       setPaletteIntroLoading(true);
       setPaletteIntroMessage("");
+      setPaletteIntroError(null);
 
       const payload = createPaletteIntroPayload({ brandName, industry, vibe });
+
+      let accumulatedText = "";
 
       try {
         const { text } = await streamAgencyRespond(payload, ({ type, message }) => {
           if (type === 'delta') {
-            setPaletteIntroMessage(prev => prev ? `${prev}${message}` : message);
+            accumulatedText = accumulatedText ? `${accumulatedText}${message}` : message;
+            const extracted = extractMessageFromJson(accumulatedText);
+            setPaletteIntroMessage(extracted);
           } else if (type === 'message') {
-            setPaletteIntroMessage(message || '');
+            accumulatedText = message || accumulatedText;
+            const extracted = extractMessageFromJson(accumulatedText);
+            setPaletteIntroMessage(extracted);
           }
         });
 
         if (!cancelled) {
           const finalText = text?.trim() ? text : paletteIntroFallback;
-          setPaletteIntroMessage(finalText);
+          const extracted = extractMessageFromJson(finalText);
+          setPaletteIntroMessage(extracted || paletteIntroFallback);
         }
-      } catch (e) {
+      } catch (e: any) {
         if (!cancelled) {
+          setPaletteIntroError(e?.message || 'Failed to load intro message.');
           setPaletteIntroMessage(paletteIntroFallback);
         }
       } finally {
@@ -394,7 +727,18 @@ export default function BrandMeNowWizard() {
     setNameAgentMessage("");
     setNameScanSucceeded(false);
     setNameChatHistory([]);
-  setNameSuggestions([]);
+    setNameSuggestions([]);
+    setNameStreamingText("");
+    setNameFinalMessage("");
+  }, [step]);
+
+  useEffect(() => {
+    if (step !== "palette") return;
+    setPaletteAgentMessage("");
+    setPaletteScanSucceeded(false);
+    setPaletteChatHistory([]);
+    setPaletteStreamingText("");
+    setPaletteFinalMessage("");
   }, [step]);
 
   const Palettes: string[][] = [
@@ -590,82 +934,105 @@ export default function BrandMeNowWizard() {
       // Start streaming for typing effect
       setLogoAgentMessage("");
       setLogoChatHistory(prev => [...prev, { role: 'user', text: inputText }]);
+      let streamedText = "";
       await streamAgencyRespond(payload, ({ type, message }) => {
         if (type === 'delta') {
-          setLogoAgentMessage(prev => prev ? `${prev}${message}` : message);
+          streamedText = streamedText ? `${streamedText}${message}` : message;
+          // Remove first tool call from streamed text in real-time
+          const displayText = removeFirstToolCall(streamedText);
+          setLogoAgentMessage(displayText);
         } else if (type === 'message') {
-          setLogoAgentMessage(message || '');
+          streamedText = message || streamedText;
+          // Remove first tool call from message
+          const displayText = removeFirstToolCall(streamedText);
+          setLogoAgentMessage(displayText);
         }
       });
 
       // Fetch final structured output
       const jr = await postAgencyRespond(payload);
       const j = jr?.data ?? jr; // proxy may wrap
-
-      // Non-stream General Agency returns { success, message, timestamp, file_ids_map }
-      // message may itself be a JSON string with { message, logo_urls, ... }
-      let agentText = extractMessageFromSSE(j?.message || j?.data?.message || '');
+      let streamingText = streamedText || logoAgentMessage || '';
+      let agentText = extractMessageFromSSE(j?.message || j?.data?.message || streamingText || '');
+      
+      // Remove first tool call JSON object (from {"brand_name" to })
+      agentText = removeFirstToolCall(agentText);
+      
       let parsedInner: any = null;
       if (agentText && typeof agentText === 'string') {
         try { parsedInner = JSON.parse(agentText); } catch(_) { parsedInner = null; }
       } else if (typeof agentText === 'object' && agentText) {
         parsedInner = agentText;
       }
+      
+      // Extract message text (hide tool calls)
+      let displayMessage = '';
       if (parsedInner && parsedInner.message) {
-        agentText = parsedInner.message;
+        displayMessage = parsedInner.message;
+        agentText = displayMessage;
+      } else if (agentText && typeof agentText === 'string' && !parsedInner) {
+        // If it's not JSON, use the text as-is (after removing tool call)
+        displayMessage = agentText;
       }
+      
+      // Extract logo URLs from structured output
       let urls: string[] = [];
       if (parsedInner) {
         urls = parsedInner.logo_urls || parsedInner.logos || parsedInner.images || [];
       }
-      if (!Array.isArray(urls) || urls.length < count) {
+      if (!Array.isArray(urls) || !urls.length) {
         // Try direct fields from j if inner parsing failed
         urls = j?.logo_urls || j?.logos || j?.images || j?.data?.logo_urls || [];
       }
 
-      // Normalize URL list: agent may return objects like { style, url }
+      // Normalize URL list: extract URLs from objects like { style, url }
+      // Extract just the URL part from "https" until ".png" (or end of URL)
       if (Array.isArray(urls)) {
         urls = urls
           .map((u: any) => {
-            if (typeof u === 'string') return u;
-            if (u && typeof u === 'object') return u.url || u.image_url || u.src || '';
+            let urlStr = '';
+            if (typeof u === 'string') {
+              urlStr = u;
+            } else if (u && typeof u === 'object') {
+              urlStr = u.url || u.image_url || u.src || '';
+            }
+            
+            if (urlStr && typeof urlStr === 'string') {
+              urlStr = urlStr.trim();
+              // Extract from "https" until ".png" if present
+              const httpsIndex = urlStr.indexOf('https://');
+              if (httpsIndex !== -1) {
+                const pngIndex = urlStr.indexOf('.png', httpsIndex);
+                if (pngIndex !== -1) {
+                  return urlStr.substring(httpsIndex, pngIndex + 4);
+                }
+                // If no .png, take until end or next whitespace/quote
+                const endMatch = urlStr.substring(httpsIndex).match(/^https:\/\/[^\s"']+/);
+                if (endMatch) {
+                  return endMatch[0];
+                }
+              }
+              return urlStr;
+            }
             return '';
           })
           .filter((s: string) => typeof s === 'string' && s.trim().length > 0);
       }
 
-      // Fallback if the agent didn't return logos: generate via fal.ai (image model)
-      if (!Array.isArray(urls) || urls.length < count) {
-        const basePrompt = buildFalLogoPrompt({
-          brandName,
-          industry,
-          vibe,
-          paletteColors: normalizedPalette,
-          logoStyles,
-          iconStyle,
-          typography,
-          // Use the main logo details prompt to drive fal.ai image generation
-          overridePrompt: logoUserPrompt || ""
-        });
-        const defaultFalModel = 'fal-ai/flux-pro/v1/fill';
-        const guidance = 4.0;
-        const steps = 18;
-        const baseSeed = Math.floor(Date.now() % 1000000);
-        const cacheKey = JSON.stringify({ k:'fal-fallback', count, basePrompt, normalizedPalette, model: defaultFalModel, guidance, steps, size:'768x768' });
-        const cached = logoCacheRef.current.get(cacheKey);
-        const requests = cached ? [] : Array.from({ length: count }, (_, i) => {
-          const variant = i === 0 ? "" : ` variation ${i+1}`;
-          const prompt = `${basePrompt}.${variant}. Use ONLY these HEX colors: ${(normalizedPalette).join(', ')}. Ensure PRIMARY color is ${primaryHex} used predominantly. Secondary accents: ${(secondaryHexes && secondaryHexes.length ? secondaryHexes.join(', ') : 'none')}.`;
-          return fetchFalImage(prompt + '. flat background, clean vector logo, no photo, no 3D, no mockup, simple shapes, high contrast.', "768x768", { model: defaultFalModel, guidance_scale: guidance, num_inference_steps: steps, seed: baseSeed + i });
-        });
-        urls = cached ? cached : await Promise.all(requests);
-        if (!cached) logoCacheRef.current.set(cacheKey, urls);
-        if (!agentText) agentText = "Here are logo options generated via fal.ai, tailored to your selections and color palette.";
+      // Only use agency endpoint - no FalAI fallback
+      if (!Array.isArray(urls) || !urls.length) {
+        setLogoError("The agent didn't return any logo URLs. Please try again or adjust your inputs.");
+        setLogoAgentMessage(agentText || streamingText || "");
+        setLogoChatHistory(prev => [...prev, { role: 'assistant', text: agentText || streamingText || '' }]);
+        setLogoLoading(false);
+        return;
       }
 
-      // Update message + history + options
-      setLogoAgentMessage(agentText || "");
-      setLogoChatHistory(prev => [...prev, { role: 'assistant', text: agentText || 'Generated 3 logo options.' }]);
+      // Update message + history + options (use displayMessage which excludes tool calls)
+      setLogoAgentMessage(displayMessage || agentText || "");
+      setLogoChatHistory(prev => [...prev, { role: 'assistant', text: displayMessage || agentText || 'Generated 3 logo options.' }]);
+      // Clear any previous errors since we have logos
+      setLogoError("");
 
       // Keep palette-compliance ordering as before
       const validations = await Promise.all(urls.map(async (u) => {
@@ -698,9 +1065,12 @@ export default function BrandMeNowWizard() {
     }
   };
 
-  // Refine palette using General Agency streaming + final structured response
-  const refinePaletteViaAgent = async () => {
+  // Generate/refine palette using General Agency streaming + final structured response
+  const refinePaletteViaAgent = async (overridePrompt?: string) => {
     setPaletteAgentMessage("");
+    setPaletteStreamingText("");
+    setPaletteFinalMessage("");
+    setPaletteScanSucceeded(false);
     setPaletteLoading(true);
     try {
       const normalizedPalette = (paletteColors || [])
@@ -709,12 +1079,17 @@ export default function BrandMeNowWizard() {
         .filter(c => /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c));
 
       const parts: string[] = [];
-      if (paletteUserPrompt?.trim()) parts.push(paletteUserPrompt.trim());
+      const trimmedOverride = overridePrompt?.trim() ?? '';
+      const trimmedPrimary = paletteUserPrompt?.trim() ?? '';
+      const activePrompt = trimmedOverride || trimmedPrimary;
+      
+      if (activePrompt) parts.push(activePrompt);
       if (normalizedPalette.length) parts.push(`current palette: ${normalizedPalette.join(', ')}`);
       if (brandName?.trim()) parts.push(`brand: ${brandName}`);
       if (vibe?.trim()) parts.push(`vibe: ${vibe}`);
       if (industry?.trim()) parts.push(`industry: ${industry}`);
       const inputText = parts.join('. ');
+      const userDisplay = trimmedOverride || inputText;
 
       const chat_history: AgencyMessage[] = [
         ...paletteChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage)),
@@ -731,19 +1106,26 @@ export default function BrandMeNowWizard() {
       };
 
       // Stream typing first
-      setPaletteChatHistory(prev => [...prev, { role: 'user', text: inputText }]);
+      setPaletteChatHistory(prev => [...prev, { role: 'user', text: userDisplay }]);
+      let streamingText = "";
       await streamAgencyRespond(payload, ({ type, message }) => {
         if (type === 'delta') {
-          setPaletteAgentMessage(prev => prev ? `${prev}${message}` : message);
+          streamingText = streamingText ? `${streamingText}${message}` : message;
+          setPaletteStreamingText(streamingText);
+          setPaletteAgentMessage(streamingText);
+          setPaletteScanSucceeded(true);
         } else if (type === 'message') {
-          setPaletteAgentMessage(message || '');
+          streamingText = message || streamingText;
+          setPaletteStreamingText(streamingText);
+          setPaletteAgentMessage(streamingText);
+          setPaletteScanSucceeded(true);
         }
       });
 
       // Fetch final structured output
       const jr = await postAgencyRespond(payload);
       const j = jr?.data ?? jr;
-      let agentText = extractMessageFromSSE(j?.message || j?.data?.message || '');
+      let agentText = extractMessageFromSSE(j?.message || j?.data?.message || streamingText || '');
       let parsedInner: any = null;
       if (agentText && typeof agentText === 'string') {
         try { parsedInner = JSON.parse(agentText); } catch(_) { parsedInner = null; }
@@ -770,102 +1152,137 @@ export default function BrandMeNowWizard() {
         if (normalized.length) {
           setPaletteColors(normalized);
           setPaletteSelected(true);
+          setPaletteScanSucceeded(true);
         }
       }
-      setPaletteAgentMessage(agentText || "");
-      setPaletteChatHistory(prev => [...prev, { role: 'assistant', text: agentText || 'Updated your color palette.' }]);
+      const finalMessage = agentText || streamingText || "";
+      setPaletteFinalMessage(finalMessage);
+      setPaletteAgentMessage(finalMessage);
+      setPaletteChatHistory(prev => [...prev, { role: 'assistant', text: finalMessage || 'Updated your color palette.' }]);
     } catch (e:any) {
-      setPaletteAgentMessage(e?.message || 'Failed to refine palette. Please try again.');
+      const errorMsg = e?.message || 'Failed to refine palette. Please try again.';
+      setPaletteAgentMessage(errorMsg);
+      setPaletteFinalMessage(errorMsg);
     } finally {
       setPaletteLoading(false);
     }
   };
 
-  // Suggest brand names via General Agency (stream + final JSON)
-  const suggestNamesViaAgent = async (promptOverride?: string) => {
-    const userPrompt = typeof promptOverride === "string" ? promptOverride : nameUserPrompt;
-    const trimmedPrompt = userPrompt?.trim() ?? "";
-    const inputText = composeNameSelectorMessage({
-      prompt: userPrompt,
-      brandName,
-      industry,
-      vibe,
-      instagram: user?.ig,
-    });
+  const handlePaletteAnalyze = () => {
+    if (paletteLoading) return;
+    void refinePaletteViaAgent();
+  };
 
-    if (!inputText) {
-      setNameAgentMessage("Tell me how you want the name to sound and I'll brainstorm options for you.");
-      return;
-    }
+  const handlePaletteRefine = () => {
+    if (paletteLoading) return;
+    if (!paletteRefinePrompt.trim()) return;
+    void refinePaletteViaAgent(paletteRefinePrompt);
+    setPaletteRefinePrompt('');
+  };
 
+  const handlePaletteContinue = () => {
+    if (paletteLoading) return;
+    if (!paletteScanSucceeded) return;
+    setStep("loading4");
+  };
+
+  // Suggest brand names via General Agency (stream + final JSON) - similar to analyzeSocialViaAgent
+  const suggestNamesViaAgent = async (overridePrompt?: string): Promise<string> => {
     setNameAgentMessage("");
+    setNameSuggestions([]);
     setNameLoading(true);
+    setNameStreamingText("");
+    setNameFinalMessage("");
+    setNameScanSucceeded(false);
     try {
-      const chat_history: AgencyMessage[] = [
-        ...nameChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage)),
+      const parts: string[] = [];
+      const trimmedOverride = overridePrompt?.trim() ?? '';
+      const trimmedPrimary = nameUserPrompt?.trim() ?? '';
+      const activePrompt = trimmedOverride || trimmedPrimary;
+
+      if (activePrompt) parts.push(activePrompt);
+      if (vibe?.trim()) parts.push(`vibe: ${vibe}`);
+      if (industry?.trim()) parts.push(`industry: ${industry}`);
+      if (user?.ig?.trim()) parts.push(`audience: ${user.ig}`);
+      const inputText = parts.join('. ');
+      const userDisplay = trimmedOverride || inputText;
+
+      const nextHistory: AgencyMessage[] = [
+        ...nameChatHistory.map(m => ({ role: m.role as 'user' | 'assistant', content: m.text } as AgencyMessage)),
         { role: 'user', content: inputText }
       ];
 
-      const payload = {
-        recipient_agent: "NameSelector",
-        message: inputText,
-        chat_history,
-        file_ids: null,
-        file_urls: null,
-        additional_instructions: null,
-      };
-
-      const userDisplay = trimmedPrompt || inputText;
       setNameChatHistory(prev => [...prev, { role: 'user', text: userDisplay }]);
-      await streamAgencyRespond(payload, ({ type, message }) => {
-        if (type === 'delta') {
-          setNameAgentMessage(prev => prev ? `${prev}${message}` : message);
-        } else if (type === 'message') {
-          setNameAgentMessage(message || '');
-        }
+
+      const streamPayload = createNamePayload({
+        message: inputText,
+        chatHistory: nextHistory,
+        brandName,
+        industry,
+        vibe,
+        instagram: user.ig,
       });
 
-      // Final structured response
-      const jr = await postAgencyRespond(payload);
-      const j = jr?.data ?? jr;
-      let agentText = extractMessageFromSSE(j?.message || j?.data?.message || '');
-      let parsedInner: any = null;
-      if (agentText && typeof agentText === 'string') {
-        try { parsedInner = JSON.parse(agentText); } catch(_) { parsedInner = null; }
-      } else if (typeof agentText === 'object' && agentText) {
-        parsedInner = agentText;
+      const { message: finalMessage, helpers } = await requestAgencyResponse({
+        payload: streamPayload,
+        onStream: (txt) => {
+          setNameStreamingText(txt);
+          setNameAgentMessage(txt);
+          setNameScanSucceeded(true);
+        },
+      });
+
+      if (finalMessage) {
+        setNameFinalMessage(finalMessage);
+        setNameAgentMessage(finalMessage);
+        setNameScanSucceeded(true);
+        setNameChatHistory(prev => [...prev, { role: 'assistant', text: finalMessage }]);
       }
-      if (parsedInner && parsedInner.message) {
-        agentText = parsedInner.message;
-      }
-      let names: string[] = [];
-      if (parsedInner) {
-        names = parsedInner.name_suggestions || parsedInner.names || [];
-      }
-      if (!Array.isArray(names) || !names.length) {
-        names = j?.name_suggestions || j?.data?.name_suggestions || [];
-      }
-      if (Array.isArray(names) && names.length) {
-        // Deduplicate and trim
-        const unique = Array.from(new Set(names.map(n => String(n).trim()).filter(Boolean)));
+
+      // Extract name suggestions from helpers or parsed response
+      if (Array.isArray(helpers) && helpers.length) {
+        const unique = Array.from(new Set(helpers.map(n => String(n).trim()).filter(Boolean)));
         setNameSuggestions(unique);
+      } else {
+        // Try to extract from final message if it's JSON
+        try {
+          const parsed = JSON.parse(finalMessage);
+          const names = parsed.name_suggestions || parsed.names || [];
+          if (Array.isArray(names) && names.length) {
+            const unique = Array.from(new Set(names.map(n => String(n).trim()).filter(Boolean)));
+            setNameSuggestions(unique);
+          }
+        } catch (_) {
+          // Not JSON, ignore
+        }
       }
-      setNameAgentMessage(agentText || "");
-      setNameChatHistory(prev => [...prev, { role: 'assistant', text: agentText || 'Here are name ideas based on your vibe.' }]);
+
+      return finalMessage;
     } catch (e:any) {
-      setNameAgentMessage(e?.message || 'Failed to fetch name suggestions. Please try again.');
+      const msg = e?.message || 'Failed to analyze names. Please try again.';
+      setNameAgentMessage(msg);
+      return "";
     } finally {
       setNameLoading(false);
     }
   };
 
-  const handleNameAgentSubmit = async () => {
+  const handleNameAnalyze = () => {
     if (nameLoading) return;
-    const currentPrompt = nameUserPrompt;
-    await suggestNamesViaAgent(currentPrompt);
-    if (currentPrompt?.trim()) {
-      setNameUserPrompt("");
-    }
+    void suggestNamesViaAgent();
+  };
+
+  const handleNameRefine = () => {
+    if (nameLoading) return;
+    if (!nameRefinePrompt.trim()) return;
+    void suggestNamesViaAgent(nameRefinePrompt);
+    setNameRefinePrompt('');
+  };
+
+  const handleNameContinue = () => {
+    if (nameLoading) return;
+    if (!nameScanSucceeded) return;
+    setStep("loading3");
   };
 
   // Analyze brand vision & audience (BrandVision): stream + final JSON
@@ -1229,21 +1646,10 @@ export default function BrandMeNowWizard() {
           {step === "social" && (
             <StepPanel key="social">
               <h2 className="text-2xl md:text-3xl font-semibold text-center mt-4">Vision Input / Social Scan</h2>
-              <div className="mt-6 max-w-3xl mx-auto">
-                <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
-                  <div className="flex items-center gap-2 text-sm uppercase tracking-wide text-slate-400">
-                    <Sparkles className="h-4 w-4" />
-                    <span>Getting your brand vision ready…</span>
-                  </div>
-                  <div className="mt-2 text-sm text-slate-700 whitespace-pre-line">
-                    {socialIntroMessage ? (
-                      <TypingText text={socialIntroMessage} speed={24} />
-                    ) : socialIntroError ? (
-                      <span>{socialIntroError}</span>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
+              <AgentIntroWidget
+                introMessage={socialIntroMessage}
+                introError={socialIntroError}
+              />
               <div className="mt-6 max-w-3xl mx-auto">
                 <StandardTextInput
                   value={socialUserPrompt}
@@ -1254,50 +1660,21 @@ export default function BrandMeNowWizard() {
                   className="text-lg"
                 />
                 <p className="mt-2 text-center text-md text-slate-500">Tip: {tips[currentTipIndex].replace(/^Tip:\s*/i, '')}</p>
-                {(socialStreamingText || socialFinalMessage || socialLoading) && (
-                  <div className="mt-6">
-                    <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
-                      <div className="text-xs uppercase tracking-wide text-slate-400">
-                        <Sparkles className="h-4 w-4" />
-                      </div>
-                      <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
-                        {socialFinalMessage || socialStreamingText || (socialLoading ? 'Analyzing your brand vision…' : '')}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
+                <AgentMessageWidget
+                  streamingText={socialStreamingText}
+                  finalMessage={socialFinalMessage}
+                  loading={socialLoading}
+                  loadingText="Analyzing your brand vision…"
+                />
                 {socialFinalMessage && (
-                  <div className="mt-6">
-                    <div className="text-sm font-medium text-slate-700 mb-1">Need revisions?</div>
-                    <StandardTextInput
-                      value={socialRefinePrompt}
-                      onChange={(v)=>setSocialRefinePrompt(v)}
-                      placeholder="Tell BrandVision how to adjust the vision (tone, audience, specifics)"
-                      multiline
-                      maxLength={220}
-                    />
-                    <div className="mt-3 flex justify-end">
-                      <button
-                        type="button"
-                        onClick={handleSocialRefine}
-                        disabled={socialLoading || !socialRefinePrompt.trim()}
-                        className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {socialLoading ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            Updating…
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="mr-2 h-4 w-4" />
-                            Refine Vision
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
+                  <RefinementWidget
+                    refinePrompt={socialRefinePrompt}
+                    onRefinePromptChange={setSocialRefinePrompt}
+                    onRefine={handleSocialRefine}
+                    loading={socialLoading}
+                    placeholder="Tell BrandVision how to adjust the vision (tone, audience, specifics)"
+                    refineButtonText="Refine Vision"
+                  />
                 )}
               </div>
               <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
@@ -1331,91 +1708,61 @@ export default function BrandMeNowWizard() {
 
           {step === "name" && (
             <StepPanel key="name">
-              <h2 className="text-2xl md:text-3xl font-semibold text-center">Brand Name Selection</h2>
-              <div className="mt-4 max-w-3xl mx-auto">
-                <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
-                  <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-400">
-                    <Sparkles className="h-4 w-4" />
-                    <span>Name Selector Agent</span>
-                  </div>
-                  <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
-                    {nameAgentIntro ? (
-                      <TypingText text={nameAgentIntro} speed={24} />
-                    ) : (
-                      <span>Tell me how you'd like the name to sound and I'll brainstorm options.</span>
-                    )}
-                  </div>
-                </div>
-              </div>
+              <h2 className="text-2xl md:text-3xl font-semibold text-center mt-4">Brand Name Selection</h2>
+              <AgentIntroWidget
+                introMessage={nameIntroMessage}
+                introError={nameIntroError}
+                loadingText="Getting your brand name ready…"
+              />
               <div className="mt-6 max-w-3xl mx-auto">
                 <StandardTextInput
                   value={nameUserPrompt}
                   onChange={(v)=>setNameUserPrompt(v)}
-                  placeholder="Describe the naming style or constraints (e.g., short, playful, available .com)"
-                  maxLength={220}
+                  placeholder="Type your naming preferences (e.g., 'short, playful, available .com')"
+                  maxLength={200}
                   multiline
+                  className="text-lg"
                 />
-                {(nameAgentMessage || nameLoading) && (
-                  <div className="mt-6">
-                    <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
-                      <div className="text-xs uppercase tracking-wide text-slate-400 flex items-center gap-2">
-                        <Sparkles className="h-4 w-4" />
-                        <span>Agent Response</span>
-                      </div>
-                      <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
-                        {nameLoading ? 'Brainstorming name ideas…' : nameAgentMessage}
-                      </div>
-                    </div>
-                  </div>
+                <p className="mt-2 text-center text-md text-slate-500">Tip: {tips[currentTipIndex].replace(/^Tip:\s*/i, '')}</p>
+                <AgentMessageWidget
+                  streamingText={nameStreamingText}
+                  finalMessage={nameFinalMessage}
+                  loading={nameLoading}
+                  loadingText="Analyzing your naming preferences…"
+                />
+                {nameFinalMessage && (
+                  <RefinementWidget
+                    refinePrompt={nameRefinePrompt}
+                    onRefinePromptChange={setNameRefinePrompt}
+                    onRefine={handleNameRefine}
+                    loading={nameLoading}
+                    placeholder="Tell NameSelector how to adjust the suggestions (tone, length, style)"
+                    refineButtonText="Refine Names"
+                  />
                 )}
-                {brandName && (
-                  <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50/80 p-4 shadow-sm">
-                    <div className="text-xs uppercase tracking-wide text-amber-600">Current Pick</div>
-                    <div className="mt-1 text-sm text-amber-800 font-medium">{brandName}</div>
-                    <p className="mt-1 text-xs text-amber-600">
-                      {brandAvailable ? 'Domain looks available from the last check.' : 'We still need to confirm domain availability.'}
-                    </p>
-                  </div>
-                )}
-                {nameChatHistory.length ? (
-                  <div className="mt-6">
-                    <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">Conversation</div>
-                    <div className="space-y-2">
-                      {nameChatHistory.map((m, i) => (
-                        <div
-                          key={i}
-                          className={`p-3 rounded-xl border ${m.role==='assistant' ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-white border-slate-200 text-slate-700'}`}
-                        >
-                          <div className="text-[12px] font-semibold mb-1">{m.role==='assistant' ? 'Agent' : 'You'}</div>
-                          <div className="text-sm whitespace-pre-line">{m.text}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
               </div>
               <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
                 <SecondaryButton onClick={()=>setStep("social")}>Back</SecondaryButton>
                 <div className="flex flex-wrap gap-3 justify-end">
                   <button
                     type="button"
-                    onClick={handleNameAgentSubmit}
-                    disabled={nameLoading}
+                    onClick={handleNameAnalyze}
+                    disabled={nameLoading || (!vibe.trim() && !user.ig.trim())}
                     className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {nameLoading ? (
                       <>
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Brainstorming…
+                        Analyzing…
                       </>
                     ) : (
                       <>
                         <Sparkles className="mr-2 h-4 w-4" />
-                        Ask Name Agent
+                        Analyze Names
                       </>
                     )}
                   </button>
-                  <PrimaryButton onClick={()=>setStep("loading3")} disabled={!brandName.trim() || nameLoading}>Continue</PrimaryButton>
+                  <PrimaryButton onClick={handleNameContinue} disabled={!nameScanSucceeded || nameLoading}>Continue</PrimaryButton>
                 </div>
               </div>
             </StepPanel>
@@ -1425,65 +1772,32 @@ export default function BrandMeNowWizard() {
 
           {step === "palette" && (
             <StepPanel key="palette">
-              <h2 className="text-2xl md:text-3xl font-semibold text-center">Color Palette</h2>
-              <Subheader text={paletteSubheaderText} colorClass="text-gray-600" />
-              <div className="mt-6">
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  {Palettes.slice(0, 4).map((p, idx) => (
-                    <button key={idx} onClick={()=>{setPaletteColors(p); setPaletteSelected(true); setCustomError("");}} className={`rounded-2xl border p-4 hover:shadow-sm ${paletteColors===p?"ring-2 ring-[#1ae7f6]":""}`}>
-                      <div className="flex gap-2">{p.map(c => (<div key={c} className="h-6 w-6 rounded" style={{background:c}}/>))}</div>
-                    </button>
-                  ))}
-                </div>
-                {!showMorePalettes && (
-                  <div className="mt-4 flex justify-center">
-                    <Chip onClick={() => setShowMorePalettes(true)}>More..</Chip>
-                  </div>
-                )}
-                {showMorePalettes && (
-                  <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
-                    {Palettes.slice(4).map((p, idx) => (
-                      <button key={idx + 4} onClick={()=>{setPaletteColors(p); setPaletteSelected(true); setCustomError("");}} className={`rounded-2xl border p-4 hover:shadow-sm ${paletteColors===p?"ring-2 ring-[#1ae7f6]":""}`}>
-                        <div className="flex gap-2">{p.map(c => (<div key={c} className="h-6 w-6 rounded" style={{background:c}}/>))}</div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <div className="mt-6 max-w-md mx-auto">
+              <h2 className="text-2xl md:text-3xl font-semibold text-center mt-4">Color Palette</h2>
+              <AgentIntroWidget
+                introMessage={paletteIntroMessage}
+                introError={paletteIntroError}
+                loadingText={paletteIntroLoading ? paletteIntroLoadingText : undefined}
+              />
+              <div className="mt-6 max-w-3xl mx-auto">
                 <StandardTextInput
-                  value={customInput}
-                  onChange={(v)=>setCustomInput(v)}
-                  placeholder="Enter colors (e.g., 'blue, green, yellow')"
-                  maxLength={120}
-                  error={customError || undefined}
+                  value={paletteUserPrompt}
+                  onChange={(v)=>setPaletteUserPrompt(v)}
+                  placeholder="Type your color preferences (e.g., 'warm sunset colors, princess vibes, soft pastels')"
+                  maxLength={200}
+                  multiline
+                  className="text-lg"
                 />
-                <div className="mt-2 flex justify-center">
-                  <button className="rounded-xl px-4 py-2 border hover:bg-gray-50" onClick={()=>{
-                    const parsed = parseColors(customInput);
-                    if (parsed) {
-                      setPaletteColors(parsed);
-                      setPaletteSelected(true);
-                      setCustomError("");
-                    } else {
-                      setCustomError("Please enter 1-3 valid color names (e.g., red, blue, green).");
-                    }
-                  }}>Show Palette</button>
-                </div>
-              {customError && <p className="mt-2 text-center text-red-600 text-sm">{customError}</p>}
+                <p className="mt-2 text-center text-md text-slate-500">Tip: {tips[currentTipIndex].replace(/^Tip:\s*/i, '')}</p>
+                <AgentMessageWidget
+                  streamingText={paletteStreamingText}
+                  finalMessage={paletteFinalMessage}
+                  loading={paletteLoading}
+                  loadingText="Analyzing your color preferences…"
+                />
               </div>
-              {/* Agent-driven palette refinement */}
-              {/* Animated intro removed per request */}
-              {/* Chat prompt removed per request: keep logo step only */}
-              {paletteAgentMessage ? (
-                <div className="mt-3 max-w-3xl mx-auto p-3 rounded-lg bg-cyan-50 border border-cyan-200">
-                  <div className="text-sm text-cyan-700">{paletteAgentMessage}</div>
-                </div>
-              ) : null}
-              {paletteSelected && (
-                <div className="mt-6 text-center">
-                  <p className="text-gray-700">Here's your color palette! It includes {paletteColors.map(c => c).join(", ")}.</p>
-                  <div className="mt-4 flex justify-center gap-2">
+              {paletteSelected && paletteColors.length > 0 && (
+                <div className="mt-6 max-w-3xl mx-auto text-center">
+                  <div className="flex justify-center gap-2">
                     {paletteColors.map(c => (
                       <div key={c} className="flex flex-col items-center">
                         <div className="h-12 w-12 rounded" style={{background:c}}></div>
@@ -1491,19 +1805,44 @@ export default function BrandMeNowWizard() {
                       </div>
                     ))}
                   </div>
-                  <p className="mt-4 text-gray-700">Are you happy with this, or would you like to make changes?</p>
-                  <div className="mt-4 flex justify-center gap-3">
-                    <button className="rounded-xl px-4 py-2 border hover:bg-gray-50" onClick={()=>{setPaletteSelected(false); setPaletteColors([]); setCustomInput(""); setCustomError("");}}>Clear</button>
-                    <PrimaryButton onClick={()=>setStep("loading4")}>Yes, proceed</PrimaryButton>
-                  </div>
                 </div>
               )}
-              {!paletteSelected && (
-                <div className="mt-8 flex items-center justify-between">
-                  <SecondaryButton onClick={()=>setStep("name")}>Back</SecondaryButton>
-                  <div></div>
+              {paletteFinalMessage && (
+                <div className="mt-6 max-w-3xl mx-auto">
+                  <RefinementWidget
+                    refinePrompt={paletteRefinePrompt}
+                    onRefinePromptChange={setPaletteRefinePrompt}
+                    onRefine={handlePaletteRefine}
+                    loading={paletteLoading}
+                    placeholder="Tell ColorPaletteSelector how to adjust the palette (tones, brightness, style)"
+                    refineButtonText="Refine Palette"
+                  />
                 </div>
               )}
+              <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
+                <SecondaryButton onClick={()=>setStep("name")}>Back</SecondaryButton>
+                <div className="flex flex-wrap gap-3 justify-end">
+                  <button
+                    type="button"
+                    onClick={handlePaletteAnalyze}
+                    disabled={paletteLoading}
+                    className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {paletteLoading ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Analyzing…
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="mr-2 h-4 w-4" />
+                        Analyze Colors
+                      </>
+                    )}
+                  </button>
+                  <PrimaryButton onClick={handlePaletteContinue} disabled={!paletteScanSucceeded || paletteLoading}>Continue</PrimaryButton>
+                </div>
+              </div>
             </StepPanel>
           )}
 
@@ -1511,23 +1850,12 @@ export default function BrandMeNowWizard() {
 
           {step === "logo" && (
             <StepPanel key="logo">
-              <h2 className="text-2xl md:text-3xl font-semibold text-center">Logo Generation</h2>
-              <Subheader text="Customize your style and generate options with the agent." colorClass="text-gray-600" />
-              <div className="mt-4 max-w-3xl mx-auto">
-                <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
-                  <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-400">
-                    <Sparkles className="h-4 w-4" />
-                    <span>Logo Agent</span>
-                  </div>
-                  <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
-                    {logoIntroLoading && !logoAgentIntro ? (
-                      <span>{logoIntroLoadingText}</span>
-                    ) : (
-                      <TypingText text={logoAgentIntro || logoIntroFallback} speed={24} />
-                    )}
-                  </div>
-                </div>
-              </div>
+              <h2 className="text-2xl md:text-3xl font-semibold text-center mt-4">Logo Generation</h2>
+              <AgentIntroWidget
+                introMessage={logoIntroMessage}
+                introError={logoIntroError}
+                loadingText="Preparing logo guidance…"
+              />
               <div className="mt-4 max-w-3xl mx-auto">
                 <label className="block text-sm font-medium text-gray-700 mb-1">logo details</label>
                 {/* Standardized text area for Vision Input */}
@@ -2130,4 +2458,6 @@ function Stat({ title, value }: { title:string; value:string }) {
     </div>
   );
 }
+
+
 

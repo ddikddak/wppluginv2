@@ -181,6 +181,31 @@ export function createNameIntroPayload({ brandName, industry, vibe, instagram }:
   };
 }
 
+export function createNamePayload({ message, chatHistory, brandName, industry, vibe, instagram }: BrandVisionArgs): AgencyPayload {
+  const context: Record<string, string> = {};
+  const trimmedBrand = brandName?.trim();
+  const trimmedIndustry = industry?.trim();
+  const trimmedVibe = vibe?.trim();
+  const trimmedIg = instagram?.trim();
+
+  if (trimmedBrand) context.brandName = trimmedBrand;
+  if (trimmedIndustry) context.industry = trimmedIndustry;
+  if (trimmedVibe) context.vibe = trimmedVibe;
+  if (trimmedIg) context.instagram = trimmedIg;
+
+  const baseMessage = message?.trim() ? message : 'Suggest brand names based on the provided context.';
+
+  return {
+    recipient_agent: 'NameSelector',
+    message: baseMessage,
+    chat_history: chatHistory,
+    context,
+    file_ids: null,
+    file_urls: null,
+    additional_instructions: null,
+  };
+}
+
 export function composeLogoGeneratorMessage({ prompt, brandName, industry, vibe, paletteHexes, styles, typography }: LogoGeneratorMessageArgs): string {
   const parts: string[] = [];
 
