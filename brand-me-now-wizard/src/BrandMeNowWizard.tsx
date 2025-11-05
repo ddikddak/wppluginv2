@@ -1183,7 +1183,7 @@ export default function BrandMeNowWizard() {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.6, ease: "easeOut" }}
                 >
-                  <span className="animated-gradient">Brand Wizard</span>
+                  <span className="text-[#006F74]">Brand Wizard</span>
                   <Sparkles className="h-6 w-6 text-[#006F74]"/>
                 </motion.span>
                 , your AI‑powered assistant.
