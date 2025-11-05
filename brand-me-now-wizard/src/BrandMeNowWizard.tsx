@@ -1233,11 +1233,10 @@ export default function BrandMeNowWizard() {
                 <div className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
                   <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-slate-400">
                     <Sparkles className="h-4 w-4" />
+                    <span>Getting your brand vision ready…</span>
                   </div>
-                  <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
-                    {socialIntroLoading ? (
-                      <span>Getting your brand vision ready…</span>
-                    ) : socialIntroMessage ? (
+                  <div className="mt-2 text-sm text-slate-700 whitespace-pre-line">
+                    {socialIntroMessage ? (
                       <TypingText text={socialIntroMessage} speed={24} />
                     ) : socialIntroError ? (
                       <span>{socialIntroError}</span>
