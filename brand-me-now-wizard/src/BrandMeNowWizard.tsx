@@ -1448,12 +1448,18 @@ export default function BrandMeNowWizard() {
     }
 
     try {
+      // Get first SKU if available (agent wants single SKU)
+      const firstSku = selectedSkus.size > 0 ? Array.from(selectedSkus)[0] : undefined;
+      const skusArray = firstSku ? [firstSku] : [];
+      
       const inputText = composeMockupGeneratorMessage({
         prompt: mockupUserPrompt,
         brandName,
         industry,
         vibe,
         paletteHexes: normalizedPalette,
+        selectedSkus: skusArray,
+        selectedLogoUrl: chosenLogo || undefined,
       });
 
       const agentCacheKey = JSON.stringify({ k:'mockup-agent', count, inputText });
@@ -1471,6 +1477,7 @@ export default function BrandMeNowWizard() {
       ];
 
       const brandVisionHistory: AgencyMessage[] = socialChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage));
+      
       const payload = createMockupGeneratorPayload({
         message: inputText,
         chatHistory: chat_history,
@@ -1479,7 +1486,7 @@ export default function BrandMeNowWizard() {
         vibe,
         paletteHexes: normalizedPalette,
         brandVisionHistory,
-        selectedSkus: Array.from(selectedSkus),
+        selectedSkus: skusArray,
         selectedLogoUrl: chosenLogo || undefined,
       });
 
@@ -1491,12 +1498,42 @@ export default function BrandMeNowWizard() {
       await streamAgencyRespond(payload, ({ type, message }) => {
         if (type === 'delta') {
           streamedText = streamedText ? `${streamedText}${message}` : message;
-          const displayText = removeFirstToolCall(streamedText);
+          
+          // Extract message from structured output for display
+          let displayText = removeFirstToolCall(streamedText);
+          try {
+            const parsed = JSON.parse(streamedText);
+            if (parsed && parsed.message && typeof parsed.message === 'string') {
+              displayText = parsed.message;
+            }
+          } catch (_) {
+            // Not valid JSON yet, try manual extraction
+            const messageMatch = streamedText.match(/"message"\s*:\s*"([^"]+)"/);
+            if (messageMatch) {
+              displayText = messageMatch[1];
+            }
+          }
+          
           setMockupAgentMessage(displayText);
           setMockupStreamingText(displayText);
         } else if (type === 'message') {
           streamedText = message || streamedText;
-          const displayText = removeFirstToolCall(streamedText);
+          
+          // Extract message from structured output for display
+          let displayText = removeFirstToolCall(streamedText);
+          try {
+            const parsed = JSON.parse(streamedText);
+            if (parsed && parsed.message && typeof parsed.message === 'string') {
+              displayText = parsed.message;
+            }
+          } catch (_) {
+            // Not valid JSON yet, try manual extraction
+            const messageMatch = streamedText.match(/"message"\s*:\s*"([^"]+)"/);
+            if (messageMatch) {
+              displayText = messageMatch[1];
+            }
+          }
+          
           setMockupAgentMessage(displayText);
           setMockupStreamingText(displayText);
         }
@@ -1516,6 +1553,7 @@ export default function BrandMeNowWizard() {
         parsedInner = agentText;
       }
       
+      // Extract message text (like logo generation)
       let displayMessage = '';
       if (parsedInner && parsedInner.message) {
         displayMessage = parsedInner.message;
@@ -1524,61 +1562,57 @@ export default function BrandMeNowWizard() {
         displayMessage = agentText;
       }
       
-      let urls: string[] = [];
-      if (parsedInner) {
-        urls = parsedInner.mockup_urls || parsedInner.mockups || parsedInner.images || parsedInner.urls || [];
+      // Extract public_url from product_mockup (single image, not array)
+      let mockupUrl: string | null = null;
+      
+      // Try parsing from parsedInner first
+      if (parsedInner && parsedInner.product_mockup) {
+        const productMockup = parsedInner.product_mockup;
+        if (productMockup.public_url) {
+          mockupUrl = productMockup.public_url.trim();
+        }
       }
-      if (!Array.isArray(urls) || !urls.length) {
-        urls = j?.mockup_urls || j?.mockups || j?.images || j?.urls || j?.data?.mockup_urls || [];
+      
+      // Try parsing from j (direct response)
+      if (!mockupUrl && j) {
+        const productMockup = j.product_mockup || j?.data?.product_mockup;
+        if (productMockup && productMockup.public_url) {
+          mockupUrl = productMockup.public_url.trim();
+        }
+        // Fallback: try old format for backward compatibility
+        if (!mockupUrl) {
+          const urls = j?.mockup_urls || j?.mockups || j?.images || j?.urls || j?.data?.mockup_urls || [];
+          if (Array.isArray(urls) && urls.length > 0) {
+            const firstUrl = urls[0];
+            if (typeof firstUrl === 'string') {
+              mockupUrl = firstUrl.trim();
+            } else if (firstUrl && typeof firstUrl === 'object') {
+              mockupUrl = (firstUrl.url || firstUrl.image_url || firstUrl.src || '').trim();
+            }
+          }
+        }
       }
 
-      if (Array.isArray(urls)) {
-        urls = urls
-          .map((u: any) => {
-            let urlStr = '';
-            if (typeof u === 'string') {
-              urlStr = u;
-            } else if (u && typeof u === 'object') {
-              urlStr = u.url || u.image_url || u.src || '';
-            }
-            
-            if (urlStr && typeof urlStr === 'string') {
-              urlStr = urlStr.trim();
-              const httpsIndex = urlStr.indexOf('https://');
-              if (httpsIndex !== -1) {
-                const pngIndex = urlStr.indexOf('.png', httpsIndex);
-                if (pngIndex !== -1) {
-                  return urlStr.substring(httpsIndex, pngIndex + 4);
-                }
-                const endMatch = urlStr.substring(httpsIndex).match(/^https:\/\/[^\s"']+/);
-                if (endMatch) {
-                  return endMatch[0];
-                }
-              }
-              return urlStr;
-            }
-            return '';
-          })
-          .filter((s: string) => typeof s === 'string' && s.trim().length > 0);
-      }
-
-      if (!Array.isArray(urls) || !urls.length) {
-        setMockupError("The agent didn't return any mockup URLs. Please try again or adjust your inputs.");
+      if (!mockupUrl) {
+        setMockupError("The agent didn't return any mockup URL. Please try again or adjust your inputs.");
         setMockupAgentMessage(agentText || streamingText || "");
         setMockupChatHistory(prev => [...prev, { role: 'assistant', text: agentText || streamingText || '' }]);
         setMockupLoading(false);
         return;
       }
 
+      // Update message + history + single mockup URL
       const finalMessage = displayMessage || agentText || "";
       setMockupAgentMessage(finalMessage);
       setMockupFinalMessage(finalMessage);
-      setMockupChatHistory(prev => [...prev, { role: 'assistant', text: finalMessage || 'Generated mockup options.' }]);
+      setMockupChatHistory(prev => [...prev, { role: 'assistant', text: finalMessage || 'Generated mockup.' }]);
       setMockupError("");
 
-      logoCacheRef.current.set(agentCacheKey, urls);
-      setMockupOptions(urls);
-      if (!chosenMockup && urls.length) setChosenMockup(urls[0]);
+      // Store single URL as array for compatibility (but only one item)
+      const urlsArray = [mockupUrl];
+      logoCacheRef.current.set(agentCacheKey, urlsArray);
+      setMockupOptions(urlsArray);
+      if (!chosenMockup) setChosenMockup(mockupUrl);
     } catch (e:any) {
       setMockupError(e?.message || 'Generation failed. Please try again or adjust inputs.');
     } finally {
@@ -1891,8 +1925,24 @@ export default function BrandMeNowWizard() {
         payload: streamPayload,
         onStream: (txt) => {
           accumulatedStreamText = txt;
-          setProductStreamingText(txt);
-          setProductAgentMessage(txt);
+          
+          // Extract message from structured output for display
+          let displayMessage = txt;
+          try {
+            const parsed = JSON.parse(txt);
+            if (parsed && parsed.message && typeof parsed.message === 'string') {
+              displayMessage = parsed.message;
+            }
+          } catch (_) {
+            // Not valid JSON yet, try manual extraction
+            const messageMatch = txt.match(/"message"\s*:\s*"([^"]+)"/);
+            if (messageMatch) {
+              displayMessage = messageMatch[1];
+            }
+          }
+          
+          setProductStreamingText(displayMessage);
+          setProductAgentMessage(displayMessage);
           setProductScanSucceeded(true);
           
           // Try to extract SKUs from streaming text
@@ -2866,23 +2916,17 @@ export default function BrandMeNowWizard() {
                   loadingText="Generating mockup directions…"
                 />
               </div>
-              {!!mockupOptions.length && (
-                <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {mockupOptions.map((src)=> (
-                    <div key={src} className={`rounded-xl border overflow-hidden hover:shadow-sm ${chosenMockup===src?"ring-2 ring-[#1ae7f6]":""}`}>
-                      <img src={src} alt="mockup" className="w-full h-auto" loading="lazy" decoding="async" fetchPriority="low" sizes="(max-width: 768px) 100vw, 1024px" />
-                      <div className="p-2 flex items-center justify-between">
-                        <button className="rounded-xl px-3 py-1 border inline-flex items-center gap-2" onClick={()=>setChosenMockup(src)}>
-                          <i className="fi fi-rr-check"></i>
-                          Use this
-                        </button>
-                        <button className="rounded-xl px-3 py-1 border inline-flex items-center gap-2" onClick={()=>downloadImage(src)}>
-                          <i className="fi fi-rr-download"></i>
-                          Download
-                        </button>
-                      </div>
+              {!!mockupOptions.length && mockupOptions[0] && (
+                <div className="mt-6 max-w-3xl mx-auto">
+                  <div className="rounded-xl border overflow-hidden hover:shadow-sm">
+                    <img src={mockupOptions[0]} alt="mockup" className="w-full h-auto" loading="lazy" decoding="async" fetchPriority="low" sizes="(max-width: 768px) 100vw, 1024px" />
+                    <div className="p-2 flex items-center justify-end">
+                      <button className="rounded-xl px-3 py-1 border inline-flex items-center gap-2" onClick={()=>downloadImage(mockupOptions[0])}>
+                        <i className="fi fi-rr-download"></i>
+                        Download
+                      </button>
                     </div>
-                  ))}
+                  </div>
                 </div>
               )}
               {mockupFinalMessage && (

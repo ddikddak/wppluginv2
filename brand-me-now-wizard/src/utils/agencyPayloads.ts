@@ -86,6 +86,8 @@ type MockupGeneratorMessageArgs = {
   industry?: string;
   vibe?: string;
   paletteHexes?: string[];
+  selectedSkus?: string[];
+  selectedLogoUrl?: string;
 };
 
 type MockupGeneratorIntroArgs = {
@@ -537,7 +539,7 @@ export function createProductSelectorPayload({ message, chatHistory, brandName, 
   };
 }
 
-export function composeMockupGeneratorMessage({ prompt, brandName, industry, vibe, paletteHexes }: MockupGeneratorMessageArgs): string {
+export function composeMockupGeneratorMessage({ prompt, brandName, industry, vibe, paletteHexes, selectedSkus, selectedLogoUrl }: MockupGeneratorMessageArgs): string {
   const parts: string[] = [];
 
   const trimmedPrompt = prompt?.trim();
@@ -546,8 +548,26 @@ export function composeMockupGeneratorMessage({ prompt, brandName, industry, vib
   const trimmedVibe = vibe?.trim();
   const normalizedPalette = normalizeHexList(paletteHexes);
 
-  if (trimmedPrompt) parts.push(trimmedPrompt);
+  // Priority order: Logo URL first, then first SKU, then user prompt
+  // Add selected logo URL first (highest priority)
+  if (selectedLogoUrl?.trim()) {
+    parts.push(`logo URL: ${selectedLogoUrl.trim()}`);
+  }
 
+  // Add first selected SKU (agent wants single SKU)
+  if (Array.isArray(selectedSkus) && selectedSkus.length > 0) {
+    const firstSku = selectedSkus[0]?.trim();
+    if (firstSku) {
+      parts.push(`SKU: ${firstSku}`);
+    }
+  }
+
+  // Add user prompt/text if provided
+  if (trimmedPrompt) {
+    parts.push(trimmedPrompt);
+  }
+
+  // Add other context information
   if (normalizedPalette.length) {
     parts.push(`palette HEX: ${normalizedPalette.join(', ')}`);
     const [primary, ...rest] = normalizedPalette;
