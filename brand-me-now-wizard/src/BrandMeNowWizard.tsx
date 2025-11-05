@@ -11,11 +11,125 @@ import {
   createLogoGeneratorPayload,
   createNameIntroPayload,
   createNamePayload,
+  createProductSelectorIntroPayload,
+  createProductSelectorPayload,
+  composeMockupGeneratorMessage,
+  createMockupGeneratorIntroPayload,
+  createMockupGeneratorPayload,
 } from './utils/agencyPayloads';
 import { postAgencyRespond, streamAgencyRespond, requestAgencyResponse, extractMessageFromSSE } from './utils/backendHandler';
 import type { AgencyMessage } from './utils/backendHandler';
 
 // Reusable widgets for agent-driven steps
+/**
+ * Extracts message from structured output incrementally as tokens arrive.
+ * Waits until "message": " is found, then displays message content tokens as they arrive.
+ * For non-structured output, returns the text as-is.
+ */
+function extractMessageFromStructuredOutput(text: string, isStructured: boolean = false): string {
+  if (!text || typeof text !== 'string') return '';
+  
+  // For structured output, wait until message field starts, then show content incrementally
+  if (isStructured) {
+    // First remove tool calls (JSON objects that are function calls)
+    const cleanedText = removeFirstToolCall(text);
+    
+    // Try to parse as complete JSON first (for final state)
+    try {
+      const parsed = JSON.parse(cleanedText);
+      if (parsed && typeof parsed === 'object' && parsed.message) {
+        return String(parsed.message);
+      }
+      return '';
+    } catch (_) {
+      // Not valid JSON (partial during streaming), extract message field incrementally
+      // Look for "message": " pattern
+      const messagePattern = '"message"';
+      const messageKeyIndex = cleanedText.indexOf(messagePattern);
+      
+      if (messageKeyIndex === -1) {
+        // Haven't found "message" key yet
+        return '';
+      }
+      
+      // Found "message", now look for colon and opening quote
+      const afterKey = cleanedText.substring(messageKeyIndex + messagePattern.length);
+      const colonIndex = afterKey.indexOf(':');
+      
+      if (colonIndex === -1) {
+        // Haven't found colon yet
+        return '';
+      }
+      
+      // Found colon, skip whitespace and look for opening quote
+      const afterColon = afterKey.substring(colonIndex + 1);
+      const trimmedAfterColon = afterColon.trimStart();
+      
+      if (!trimmedAfterColon.startsWith('"')) {
+        // Haven't found opening quote yet
+        return '';
+      }
+      
+      // Found opening quote, now extract message content incrementally
+      // Start after the opening quote
+      const messageStartIndex = afterKey.indexOf('"', colonIndex) + 1;
+      const messageContent = cleanedText.substring(messageKeyIndex + messagePattern.length + colonIndex + 1);
+      const trimmedMessageContent = messageContent.trimStart();
+      
+      if (!trimmedMessageContent.startsWith('"')) {
+        return '';
+      }
+      
+      // Extract content after opening quote
+      const contentAfterQuote = trimmedMessageContent.substring(1);
+      
+      // Find the closing quote, handling escaped quotes
+      let endIndex = 0;
+      let escaped = false;
+      let foundClosingQuote = false;
+      
+      while (endIndex < contentAfterQuote.length) {
+        const char = contentAfterQuote[endIndex];
+        
+        if (escaped) {
+          escaped = false;
+          endIndex++;
+          continue;
+        }
+        
+        if (char === '\\') {
+          escaped = true;
+          endIndex++;
+          continue;
+        }
+        
+        if (char === '"') {
+          // Found closing quote - extract everything up to (but not including) this quote
+          foundClosingQuote = true;
+          break;
+        }
+        
+        endIndex++;
+      }
+      
+      // Extract message content up to closing quote (or all content if no closing quote yet)
+      const messageValue = foundClosingQuote 
+        ? contentAfterQuote.substring(0, endIndex)
+        : contentAfterQuote; // Show partial content as it streams
+      
+      // Unescape common escape sequences
+      return messageValue
+        .replace(/\\"/g, '"')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\\\\/g, '\\');
+    }
+  }
+  
+  // For non-structured output, return text as-is
+  return text;
+}
+
 function AgentIntroWidget({ 
   introMessage, 
   introError, 
@@ -40,13 +154,6 @@ function AgentIntroWidget({
       </div>
     </div>
   );
-}
-
-function filterToolCalls(text: string): string {
-  if (!text) return text;
-  // Replace content inside curly braces with "Thinking"
-  // This handles nested braces and multiple occurrences
-  return text.replace(/\{[^}]*\}/g, '\nThinking\n\n');
 }
 
 function removeFirstToolCall(text: string): string {
@@ -78,6 +185,7 @@ function removeFirstToolCall(text: string): string {
   return text;
 }
 
+
 function AgentMessageWidget({ 
   streamingText, 
   finalMessage, 
@@ -91,8 +199,9 @@ function AgentMessageWidget({
 }) {
   if (!streamingText && !finalMessage && !loading) return null;
   
-  const displayText = finalMessage || streamingText || (loading ? (loadingText || 'Analyzing your brand vision…') : '');
-  const filteredText = filterToolCalls(displayText);
+  const rawText = finalMessage || streamingText || (loading ? (loadingText || 'Analyzing your brand vision…') : '');
+  // Parse structured output to extract message field and remove tool calls
+  const parsedText = extractMessageFromStructuredOutput(rawText);
   
   return (
     <div className="mt-6">
@@ -101,7 +210,7 @@ function AgentMessageWidget({
           <Sparkles className="h-4 w-4" />
         </div>
         <div className="mt-2 text-sm text-slate-700 whitespace-pre-line min-h-[48px]">
-          {filteredText}
+          {parsedText}
         </div>
       </div>
     </div>
@@ -161,7 +270,8 @@ export default function BrandMeNowWizard() {
   type Step =
     | "form" | "loading1" | "social" | "loading2" | "name" | "loading3"
     | "palette" | "loading4" | "logo" | "loading5" | "product" | "loading6"
-    | "preview" | "loading7" | "profit" | "loading8" | "book" | "done";
+    | "preview" | "loading7" | "profit" | "loading8" | "book" | "done"
+    | "mockup" | "loading9";
 
   const tips = [
     "Tip: Include details about your audience (e.g., Gen Z wellness) for better personalized results.",
@@ -199,6 +309,9 @@ export default function BrandMeNowWizard() {
   const [logoIntroError, setLogoIntroError] = useState<string | null>(null);
   const [logoAgentMessage, setLogoAgentMessage] = useState<string>("");
   const [logoChatHistory, setLogoChatHistory] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
+  const [logoRefinePrompt, setLogoRefinePrompt] = useState<string>("");
+  const [logoStreamingText, setLogoStreamingText] = useState<string>("");
+  const [logoFinalMessage, setLogoFinalMessage] = useState<string>("");
   // Agent-driven palette conversation states
   const [paletteUserPrompt, setPaletteUserPrompt] = useState<string>("");
   const [paletteRefinePrompt, setPaletteRefinePrompt] = useState<string>("");
@@ -239,13 +352,33 @@ export default function BrandMeNowWizard() {
   const [socialFinalMessage, setSocialFinalMessage] = useState<string>("");
   const [socialScanSucceeded, setSocialScanSucceeded] = useState<boolean>(false);
   const [socialRefinePrompt, setSocialRefinePrompt] = useState<string>("");
-  // Agent-driven product conversation states (ProductAdvisor)
+  // Agent-driven product conversation states (ProductSelector)
   const [productUserPrompt, setProductUserPrompt] = useState<string>("");
-  const [productAgentIntro, setProductAgentIntro] = useState<string>("");
   const [productAgentMessage, setProductAgentMessage] = useState<string>("");
   const [productChatHistory, setProductChatHistory] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
   const [productLoading, setProductLoading] = useState<boolean>(false);
   const [productSuggestions, setProductSuggestions] = useState<Array<{ sku: string; title: string; blurb: string; category: string }>>([]);
+  const [productStreamingText, setProductStreamingText] = useState<string>("");
+  const [productFinalMessage, setProductFinalMessage] = useState<string>("");
+  const [productRefinePrompt, setProductRefinePrompt] = useState<string>("");
+  const [productIntroMessage, setProductIntroMessage] = useState<string>("");
+  const [productIntroLoading, setProductIntroLoading] = useState<boolean>(false);
+  const [productIntroError, setProductIntroError] = useState<string | null>(null);
+  const [productScanSucceeded, setProductScanSucceeded] = useState<boolean>(false);
+  // Agent-driven mockup conversation states (MockupGenerator)
+  const [mockupUserPrompt, setMockupUserPrompt] = useState<string>("");
+  const [mockupIntroLoading, setMockupIntroLoading] = useState<boolean>(false);
+  const [mockupIntroMessage, setMockupIntroMessage] = useState<string>("");
+  const [mockupIntroError, setMockupIntroError] = useState<string | null>(null);
+  const [mockupAgentMessage, setMockupAgentMessage] = useState<string>("");
+  const [mockupChatHistory, setMockupChatHistory] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
+  const [mockupRefinePrompt, setMockupRefinePrompt] = useState<string>("");
+  const [mockupStreamingText, setMockupStreamingText] = useState<string>("");
+  const [mockupFinalMessage, setMockupFinalMessage] = useState<string>("");
+  const [mockupLoading, setMockupLoading] = useState<boolean>(false);
+  const [mockupError, setMockupError] = useState<string>("");
+  const [mockupOptions, setMockupOptions] = useState<string[]>([]);
+  const [chosenMockup, setChosenMockup] = useState<string | null>(null);
   // Agent-driven preview conversation states (PreviewStylist)
   const [previewUserPrompt, setPreviewUserPrompt] = useState<string>("");
   const [previewAgentIntro, setPreviewAgentIntro] = useState<string>("");
@@ -258,7 +391,7 @@ export default function BrandMeNowWizard() {
   const [profitAgentMessage, setProfitAgentMessage] = useState<string>("");
   const [profitChatHistory, setProfitChatHistory] = useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
   const [profitLoading, setProfitLoading] = useState<boolean>(false);
-  const [category, setCategory] = useState("supplements");
+  const [category, setCategory] = useState("");
   const [sku, setSku] = useState<string | null>(null);
   const [previews, setPreviews] = useState<string[]>([]);
   const [profit, setProfit] = useState<{ base:number; retail:number; followers:number; conv:number; estUnits?:number; estProfit?:number }>({ base: 10, retail: 29, followers: 5000, conv: 0.02 });
@@ -281,7 +414,7 @@ export default function BrandMeNowWizard() {
       form: "loading1", loading1: "social", social: "loading2", loading2: "name",
       name: "loading3", loading3: "palette", palette: "loading4", loading4: "logo",
       logo: "loading5", loading5: "product", product: "loading6", loading6: "preview",
-      preview: "loading7", loading7: "profit", profit: "loading8", loading8: "book",
+      preview: "loading9", loading9: "mockup", mockup: "loading7", loading7: "profit", profit: "loading8", loading8: "book",
       book: "done", done: "done",
     };
     if (step.startsWith("loading")) t = setTimeout(() => setStep(next[step]), 1200);
@@ -296,9 +429,6 @@ export default function BrandMeNowWizard() {
     if (step === "social") {
       setSocialAgentIntro("I'll help summarize your brand vision and audience. Share any details, or let me scan your vibe to suggest directions.");
     }
-    if (step === "product") {
-      setProductAgentIntro("Need help picking products? Describe your focus or constraints and I'll suggest SKUs that fit your brand.");
-    }
     if (step === "preview") {
       setPreviewAgentIntro("I can adjust the mock-up layout automatically. Tell me where to place the logo or the background you prefer.");
     }
@@ -308,72 +438,114 @@ export default function BrandMeNowWizard() {
   }, [step]);
 
   useEffect(() => {
-    if (step !== 'logo') {
-      return;
-    }
-    // Only skip if already loading or if we already have an intro message
-    if (logoIntroLoading || logoIntroMessage) {
-      return;
-    }
-
-    setLogoIntroError(null);
-    setLogoIntroMessage("");
-
+    if (step !== "product") return;
+    setProductIntroMessage("");
+    setProductIntroError(null);
+    setProductIntroLoading(false);
     let cancelled = false;
-    let latestIntroText = "";
 
-    const runIntro = async () => {
-      setLogoIntroLoading(true);
+    const runProductIntro = async () => {
+      setProductIntroLoading(true);
+      setProductIntroMessage("");
+      setProductIntroError(null);
+
+      const normalizedPalette = normalizePaletteHexes(paletteColors);
+      const payload = createProductSelectorIntroPayload({
+        brandName,
+        industry,
+        vibe,
+        paletteHexes: normalizedPalette,
+      });
+
+      let accumulatedText = "";
+
       try {
-        const normalizedPalette = normalizePaletteHexes(paletteColors);
-        const payload = createLogoGeneratorIntroPayload({
-          brandName,
-          industry,
-          vibe,
-          paletteHexes: normalizedPalette,
-        });
-
-        const streamResult = await streamAgencyRespond(payload, (chunk) => {
-          if (cancelled) return;
-          if (chunk.type === 'delta') {
-            latestIntroText = latestIntroText ? `${latestIntroText}${chunk.message}` : chunk.message;
-            setLogoIntroMessage(latestIntroText);
-          } else if (chunk.type === 'message') {
-            // Replace with full message when received
-            latestIntroText = chunk.message || latestIntroText;
-            setLogoIntroMessage(latestIntroText);
+        const { text } = await streamAgencyRespond(payload, ({ type, message }) => {
+          if (type === 'delta') {
+            accumulatedText = accumulatedText ? `${accumulatedText}${message}` : message;
+            const extracted = extractMessageFromStructuredOutput(accumulatedText, true);
+            if (!cancelled) {
+              setProductIntroMessage(extracted);
+            }
+          } else if (type === 'message') {
+            accumulatedText = message || accumulatedText;
+            const extracted = extractMessageFromStructuredOutput(accumulatedText, true);
+            if (!cancelled) {
+              setProductIntroMessage(extracted);
+            }
           }
         });
 
-        if (!latestIntroText) {
-          const streamText = extractMessageFromSSE(streamResult?.text || '');
-          if (streamText) {
-            latestIntroText = streamText;
-          }
-        }
-
-        if (!latestIntroText) {
-          const jr = await postAgencyRespond(payload);
-          const j = jr?.data ?? jr;
-          const fallback = extractMessageFromSSE(j?.message || j?.data?.message || '');
-          if (fallback) {
-            latestIntroText = fallback;
-          }
-        }
-
-        if (cancelled) return;
-
-        if (latestIntroText) {
-          setLogoIntroMessage(latestIntroText);
-          setLogoChatHistory([{ role: 'assistant', text: latestIntroText }]);
-        } else {
-          setLogoIntroMessage(logoIntroFallback);
-          setLogoChatHistory([{ role: 'assistant', text: logoIntroFallback }]);
-        }
-      } catch (e) {
         if (!cancelled) {
-          setLogoIntroError("I couldn't reach LogoGenerator right now. Share your style preferences to get started.");
-          setLogoIntroMessage("");
+          const finalText = text?.trim() ? text : '';
+          const extracted = extractMessageFromStructuredOutput(finalText, true);
+          if (extracted) {
+            setProductIntroMessage(extracted);
+          }
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setProductIntroError(e?.message || 'Failed to load product selection guidance.');
+        }
+      } finally {
+        if (!cancelled) {
+          setProductIntroLoading(false);
+        }
+      }
+    };
+
+    runProductIntro();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [step, brandName, industry, vibe, paletteColors]);
+
+  useEffect(() => {
+    if (step !== "logo") return;
+    setLogoIntroMessage("");
+    setLogoIntroError(null);
+    setLogoIntroLoading(false);
+    let cancelled = false;
+
+    const runLogoIntro = async () => {
+      setLogoIntroLoading(true);
+      setLogoIntroMessage("");
+      setLogoIntroError(null);
+
+      const normalizedPalette = normalizePaletteHexes(paletteColors);
+      const payload = createLogoGeneratorIntroPayload({
+        brandName,
+        industry,
+        vibe,
+        paletteHexes: normalizedPalette,
+      });
+
+      let accumulatedText = "";
+
+      try {
+        const { text } = await streamAgencyRespond(payload, ({ type, message }) => {
+          if (type === 'delta') {
+            accumulatedText = accumulatedText ? `${accumulatedText}${message}` : message;
+            const extracted = extractMessageFromStructuredOutput(accumulatedText, true);
+            setLogoIntroMessage(extracted);
+          } else if (type === 'message') {
+            accumulatedText = message || accumulatedText;
+            const extracted = extractMessageFromStructuredOutput(accumulatedText, true);
+            setLogoIntroMessage(extracted);
+          }
+        });
+
+        if (!cancelled) {
+          const finalText = text?.trim() ? text : logoIntroFallback;
+          const extracted = extractMessageFromStructuredOutput(finalText, true);
+          setLogoIntroMessage(extracted || logoIntroFallback);
+          setLogoChatHistory([{ role: 'assistant', text: extracted || logoIntroFallback }]);
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setLogoIntroError(e?.message || 'Failed to load intro message.');
+          setLogoIntroMessage(logoIntroFallback);
         }
       } finally {
         if (!cancelled) {
@@ -382,12 +554,74 @@ export default function BrandMeNowWizard() {
       }
     };
 
-    runIntro();
+    runLogoIntro();
 
     return () => {
       cancelled = true;
     };
-  }, [step, brandName, industry, vibe, paletteColors, logoIntroLoading, logoIntroMessage, logoIntroFallback]);
+  }, [step, brandName, industry, vibe, paletteColors, logoIntroFallback]);
+
+  useEffect(() => {
+    if (step !== "mockup") return;
+    setMockupIntroMessage("");
+    setMockupIntroError(null);
+    setMockupIntroLoading(false);
+    let cancelled = false;
+
+    const mockupIntroFallback = "Let's create mockup images for your brand. Share any style preferences and I'll generate options that respect your palette.";
+
+    const runMockupIntro = async () => {
+      setMockupIntroLoading(true);
+      setMockupIntroMessage("");
+      setMockupIntroError(null);
+
+      const normalizedPalette = normalizePaletteHexes(paletteColors);
+      const payload = createMockupGeneratorIntroPayload({
+        brandName,
+        industry,
+        vibe,
+        paletteHexes: normalizedPalette,
+      });
+
+      let accumulatedText = "";
+
+      try {
+        const { text } = await streamAgencyRespond(payload, ({ type, message }) => {
+          if (type === 'delta') {
+            accumulatedText = accumulatedText ? `${accumulatedText}${message}` : message;
+            const extracted = extractMessageFromStructuredOutput(accumulatedText, true);
+            setMockupIntroMessage(extracted);
+          } else if (type === 'message') {
+            accumulatedText = message || accumulatedText;
+            const extracted = extractMessageFromStructuredOutput(accumulatedText, true);
+            setMockupIntroMessage(extracted);
+          }
+        });
+
+        if (!cancelled) {
+          const finalText = text?.trim() ? text : mockupIntroFallback;
+          const extracted = extractMessageFromStructuredOutput(finalText, true);
+          setMockupIntroMessage(extracted || mockupIntroFallback);
+          setMockupChatHistory([{ role: 'assistant', text: extracted || mockupIntroFallback }]);
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setMockupIntroError(e?.message || 'Failed to load intro message.');
+          setMockupIntroMessage(mockupIntroFallback);
+        }
+      } finally {
+        if (!cancelled) {
+          setMockupIntroLoading(false);
+        }
+      }
+    };
+
+    runMockupIntro();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [step, brandName, industry, vibe, paletteColors]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -613,61 +847,6 @@ export default function BrandMeNowWizard() {
     setPaletteIntroLoading(false);
     let cancelled = false;
 
-    const extractMessageFromJson = (text: string): string => {
-      if (!text || typeof text !== 'string') return text || '';
-      
-      // Try to parse as JSON and extract message field
-      try {
-        const parsed = JSON.parse(text);
-        if (parsed && typeof parsed === 'object' && parsed.message) {
-          return String(parsed.message);
-        }
-      } catch (_) {
-        // Not valid JSON (might be partial during streaming), try to extract message field
-        // Look for "message": "..." pattern, handling escaped quotes
-        const messageKeyIndex = text.indexOf('"message"');
-        if (messageKeyIndex !== -1) {
-          const afterKey = text.substring(messageKeyIndex + 9); // length of "message"
-          const colonIndex = afterKey.indexOf(':');
-          if (colonIndex !== -1) {
-            const afterColon = afterKey.substring(colonIndex + 1).trim();
-            // Check if it's a string value (starts with ")
-            if (afterColon.startsWith('"')) {
-              // Find the closing quote, handling escaped quotes
-              let endIndex = 1;
-              let escaped = false;
-              while (endIndex < afterColon.length) {
-                const char = afterColon[endIndex];
-                if (escaped) {
-                  escaped = false;
-                  endIndex++;
-                  continue;
-                }
-                if (char === '\\') {
-                  escaped = true;
-                  endIndex++;
-                  continue;
-                }
-                if (char === '"') {
-                  // Found the closing quote
-                  const messageValue = afterColon.substring(1, endIndex);
-                  // Unescape common escape sequences
-                  return messageValue
-                    .replace(/\\"/g, '"')
-                    .replace(/\\n/g, '\n')
-                    .replace(/\\t/g, '\t')
-                    .replace(/\\\\/g, '\\');
-                }
-                endIndex++;
-              }
-            }
-          }
-        }
-      }
-      
-      return text;
-    };
-
     const runPaletteIntro = async () => {
       setPaletteIntroLoading(true);
       setPaletteIntroMessage("");
@@ -681,18 +860,18 @@ export default function BrandMeNowWizard() {
         const { text } = await streamAgencyRespond(payload, ({ type, message }) => {
           if (type === 'delta') {
             accumulatedText = accumulatedText ? `${accumulatedText}${message}` : message;
-            const extracted = extractMessageFromJson(accumulatedText);
+            const extracted = extractMessageFromStructuredOutput(accumulatedText, true);
             setPaletteIntroMessage(extracted);
           } else if (type === 'message') {
             accumulatedText = message || accumulatedText;
-            const extracted = extractMessageFromJson(accumulatedText);
+            const extracted = extractMessageFromStructuredOutput(accumulatedText, true);
             setPaletteIntroMessage(extracted);
           }
         });
 
         if (!cancelled) {
           const finalText = text?.trim() ? text : paletteIntroFallback;
-          const extracted = extractMessageFromJson(finalText);
+          const extracted = extractMessageFromStructuredOutput(finalText, true);
           setPaletteIntroMessage(extracted || paletteIntroFallback);
         }
       } catch (e: any) {
@@ -741,6 +920,17 @@ export default function BrandMeNowWizard() {
     setPaletteFinalMessage("");
   }, [step]);
 
+  useEffect(() => {
+    if (step !== "mockup") return;
+    setMockupAgentMessage("");
+    setMockupChatHistory([]);
+    setMockupStreamingText("");
+    setMockupFinalMessage("");
+    setMockupOptions([]);
+    setChosenMockup(null);
+  }, [step]);
+
+
   const Palettes: string[][] = [
     ["#0ea5e9", "#0369a1", "#111827"],
     ["#22c55e", "#14532d", "#0f172a"],
@@ -755,10 +945,14 @@ export default function BrandMeNowWizard() {
 
   const styleSeeds = ["Futuristic", "Elegant", "Minimalist", "Geometric", "Mascot", "Nature"];
   const Categories = [
-    { id: "supplements", label: "Supplements" },
-    { id: "fashion", label: "Fashion" },
-    { id: "beauty", label: "Beauty" },
-    { id: "hydration", label: "Hydration" },
+    { id: "mens-health", label: "Men's Health" },
+    { id: "general-health", label: "General Health" },
+    { id: "premium-sports-nutrition", label: "Premium Sports Nutrition" },
+    { id: "weight-loss-detox", label: "Weight Loss & Detox" },
+    { id: "nootropics", label: "Nootropics" },
+    { id: "womens-health", label: "Women's Health" },
+    { id: "in-house-custom-formulas", label: "In-House Custom Formulas" },
+    { id: "premium-green-red-superfoods", label: "Premium Green & Red Superfoods" },
   ];
   const SKUs = [
     { sku: "PROT-01", title: "Whey Protein 2lb", blurb: "Vanilla. Clean label.", category: "supplements" },
@@ -933,6 +1127,8 @@ export default function BrandMeNowWizard() {
 
       // Start streaming for typing effect
       setLogoAgentMessage("");
+      setLogoStreamingText("");
+      setLogoFinalMessage("");
       setLogoChatHistory(prev => [...prev, { role: 'user', text: inputText }]);
       let streamedText = "";
       await streamAgencyRespond(payload, ({ type, message }) => {
@@ -941,11 +1137,13 @@ export default function BrandMeNowWizard() {
           // Remove first tool call from streamed text in real-time
           const displayText = removeFirstToolCall(streamedText);
           setLogoAgentMessage(displayText);
+          setLogoStreamingText(displayText);
         } else if (type === 'message') {
           streamedText = message || streamedText;
           // Remove first tool call from message
           const displayText = removeFirstToolCall(streamedText);
           setLogoAgentMessage(displayText);
+          setLogoStreamingText(displayText);
         }
       });
 
@@ -1029,8 +1227,10 @@ export default function BrandMeNowWizard() {
       }
 
       // Update message + history + options (use displayMessage which excludes tool calls)
-      setLogoAgentMessage(displayMessage || agentText || "");
-      setLogoChatHistory(prev => [...prev, { role: 'assistant', text: displayMessage || agentText || 'Generated 3 logo options.' }]);
+      const finalMessage = displayMessage || agentText || "";
+      setLogoAgentMessage(finalMessage);
+      setLogoFinalMessage(finalMessage);
+      setLogoChatHistory(prev => [...prev, { role: 'assistant', text: finalMessage || 'Generated 3 logo options.' }]);
       // Clear any previous errors since we have logos
       setLogoError("");
 
@@ -1180,6 +1380,177 @@ export default function BrandMeNowWizard() {
     setPaletteRefinePrompt('');
   };
 
+  const handleLogoRefine = () => {
+    if (logoLoading) return;
+    if (!logoRefinePrompt.trim()) return;
+    // Combine refine prompt with context about selected logo
+    const refineText = chosenLogo 
+      ? `${logoRefinePrompt.trim()}. Refine based on the currently selected logo.`
+      : logoRefinePrompt.trim();
+    setLogoUserPrompt(refineText);
+    void generateLogoOptionsViaAgent(3);
+    setLogoRefinePrompt('');
+  };
+
+  // Generate mockup options using MockupGenerator agent
+  const generateMockupOptionsViaAgent = async (count: number) => {
+    setMockupError("");
+    setMockupLoading(true);
+    const t0 = performance.now();
+    const normalizedPalette = normalizePaletteHexes(paletteColors);
+    if (!normalizedPalette.length) {
+      setMockupError("Please select a valid color palette before generating mockups.");
+      setMockupLoading(false);
+      return;
+    }
+    if (!brandName?.trim()) {
+      setMockupError("Brand name is missing. The agent may not include brand text in generated concepts.");
+    }
+
+    try {
+      const inputText = composeMockupGeneratorMessage({
+        prompt: mockupUserPrompt,
+        brandName,
+        industry,
+        vibe,
+        paletteHexes: normalizedPalette,
+      });
+
+      const agentCacheKey = JSON.stringify({ k:'mockup-agent', count, inputText });
+      const cachedAgent = logoCacheRef.current.get(agentCacheKey);
+      if (!mockupOptions.length && cachedAgent && cachedAgent.length) {
+        setMockupOptions(cachedAgent);
+        if (!chosenMockup) setChosenMockup(cachedAgent[0]);
+        setMockupLoading(false);
+        return;
+      }
+
+      const chat_history: AgencyMessage[] = [
+        ...mockupChatHistory.map(m => ({ role: m.role, content: m.text } as AgencyMessage)),
+        { role: 'user', content: inputText }
+      ];
+
+      const payload = createMockupGeneratorPayload({
+        message: inputText,
+        chatHistory: chat_history,
+        brandName,
+        industry,
+        vibe,
+        paletteHexes: normalizedPalette,
+      });
+
+      setMockupAgentMessage("");
+      setMockupStreamingText("");
+      setMockupFinalMessage("");
+      setMockupChatHistory(prev => [...prev, { role: 'user', text: inputText }]);
+      let streamedText = "";
+      await streamAgencyRespond(payload, ({ type, message }) => {
+        if (type === 'delta') {
+          streamedText = streamedText ? `${streamedText}${message}` : message;
+          const displayText = removeFirstToolCall(streamedText);
+          setMockupAgentMessage(displayText);
+          setMockupStreamingText(displayText);
+        } else if (type === 'message') {
+          streamedText = message || streamedText;
+          const displayText = removeFirstToolCall(streamedText);
+          setMockupAgentMessage(displayText);
+          setMockupStreamingText(displayText);
+        }
+      });
+
+      const jr = await postAgencyRespond(payload);
+      const j = jr?.data ?? jr;
+      let streamingText = streamedText || mockupAgentMessage || '';
+      let agentText = extractMessageFromSSE(j?.message || j?.data?.message || streamingText || '');
+      
+      agentText = removeFirstToolCall(agentText);
+      
+      let parsedInner: any = null;
+      if (agentText && typeof agentText === 'string') {
+        try { parsedInner = JSON.parse(agentText); } catch(_) { parsedInner = null; }
+      } else if (typeof agentText === 'object' && agentText) {
+        parsedInner = agentText;
+      }
+      
+      let displayMessage = '';
+      if (parsedInner && parsedInner.message) {
+        displayMessage = parsedInner.message;
+        agentText = displayMessage;
+      } else if (agentText && typeof agentText === 'string' && !parsedInner) {
+        displayMessage = agentText;
+      }
+      
+      let urls: string[] = [];
+      if (parsedInner) {
+        urls = parsedInner.mockup_urls || parsedInner.mockups || parsedInner.images || parsedInner.urls || [];
+      }
+      if (!Array.isArray(urls) || !urls.length) {
+        urls = j?.mockup_urls || j?.mockups || j?.images || j?.urls || j?.data?.mockup_urls || [];
+      }
+
+      if (Array.isArray(urls)) {
+        urls = urls
+          .map((u: any) => {
+            let urlStr = '';
+            if (typeof u === 'string') {
+              urlStr = u;
+            } else if (u && typeof u === 'object') {
+              urlStr = u.url || u.image_url || u.src || '';
+            }
+            
+            if (urlStr && typeof urlStr === 'string') {
+              urlStr = urlStr.trim();
+              const httpsIndex = urlStr.indexOf('https://');
+              if (httpsIndex !== -1) {
+                const pngIndex = urlStr.indexOf('.png', httpsIndex);
+                if (pngIndex !== -1) {
+                  return urlStr.substring(httpsIndex, pngIndex + 4);
+                }
+                const endMatch = urlStr.substring(httpsIndex).match(/^https:\/\/[^\s"']+/);
+                if (endMatch) {
+                  return endMatch[0];
+                }
+              }
+              return urlStr;
+            }
+            return '';
+          })
+          .filter((s: string) => typeof s === 'string' && s.trim().length > 0);
+      }
+
+      if (!Array.isArray(urls) || !urls.length) {
+        setMockupError("The agent didn't return any mockup URLs. Please try again or adjust your inputs.");
+        setMockupAgentMessage(agentText || streamingText || "");
+        setMockupChatHistory(prev => [...prev, { role: 'assistant', text: agentText || streamingText || '' }]);
+        setMockupLoading(false);
+        return;
+      }
+
+      const finalMessage = displayMessage || agentText || "";
+      setMockupAgentMessage(finalMessage);
+      setMockupFinalMessage(finalMessage);
+      setMockupChatHistory(prev => [...prev, { role: 'assistant', text: finalMessage || 'Generated mockup options.' }]);
+      setMockupError("");
+
+      logoCacheRef.current.set(agentCacheKey, urls);
+      setMockupOptions(urls);
+      if (!chosenMockup && urls.length) setChosenMockup(urls[0]);
+    } catch (e:any) {
+      setMockupError(e?.message || 'Generation failed. Please try again or adjust inputs.');
+    } finally {
+      setMockupLoading(false);
+      const t1 = performance.now();
+      console.debug(`[Agent Mockup Generation] Completed in ${(t1 - t0).toFixed(0)}ms`);
+    }
+  };
+
+  const handleMockupRefine = () => {
+    if (mockupLoading) return;
+    if (!mockupRefinePrompt.trim()) return;
+    void generateMockupOptionsViaAgent(3);
+    setMockupRefinePrompt('');
+  };
+
   const handlePaletteContinue = () => {
     if (paletteLoading) return;
     if (!paletteScanSucceeded) return;
@@ -1223,12 +1594,38 @@ export default function BrandMeNowWizard() {
         instagram: user.ig,
       });
 
+      let accumulatedStreamText = '';
       const { message: finalMessage, helpers } = await requestAgencyResponse({
         payload: streamPayload,
         onStream: (txt) => {
+          accumulatedStreamText = txt;
           setNameStreamingText(txt);
           setNameAgentMessage(txt);
           setNameScanSucceeded(true);
+          
+          // Try to extract names from streaming text
+          try {
+            const parsed = JSON.parse(txt);
+            const names = parsed.names || parsed.name_suggestions || [];
+            if (Array.isArray(names) && names.length) {
+              const unique = Array.from(new Set(names.map((n: any) => String(n).trim()).filter(Boolean)));
+              setNameSuggestions(unique);
+            }
+          } catch (_) {
+            // Not valid JSON yet, try manual extraction
+            const namesMatch = txt.match(/"names"\s*:\s*\[(.*?)\]/s);
+            if (namesMatch) {
+              try {
+                const namesArray = JSON.parse(`[${namesMatch[1]}]`);
+                if (Array.isArray(namesArray) && namesArray.length) {
+                  const unique = Array.from(new Set(namesArray.map((n: any) => String(n).trim()).filter(Boolean)));
+                  setNameSuggestions(unique);
+                }
+              } catch (_) {
+                // Partial JSON, ignore
+              }
+            }
+          }
         },
       });
 
@@ -1239,21 +1636,67 @@ export default function BrandMeNowWizard() {
         setNameChatHistory(prev => [...prev, { role: 'assistant', text: finalMessage }]);
       }
 
-      // Extract name suggestions from helpers or parsed response
+      // Extract name suggestions from structured response
+      let extractedNames: string[] = [];
+      
+      // First try helpers
       if (Array.isArray(helpers) && helpers.length) {
-        const unique = Array.from(new Set(helpers.map(n => String(n).trim()).filter(Boolean)));
-        setNameSuggestions(unique);
-      } else {
-        // Try to extract from final message if it's JSON
+        extractedNames = Array.from(new Set(helpers.map(n => String(n).trim()).filter(Boolean)));
+      }
+      
+      // Try to extract from final message JSON
+      if (!extractedNames.length) {
         try {
           const parsed = JSON.parse(finalMessage);
-          const names = parsed.name_suggestions || parsed.names || [];
+          const names = parsed.names || parsed.name_suggestions || [];
           if (Array.isArray(names) && names.length) {
-            const unique = Array.from(new Set(names.map(n => String(n).trim()).filter(Boolean)));
-            setNameSuggestions(unique);
+            extractedNames = Array.from(new Set(names.map((n: any) => String(n).trim()).filter(Boolean)));
           }
         } catch (_) {
-          // Not JSON, ignore
+          // Try manual extraction from final message
+          const namesMatch = finalMessage.match(/"names"\s*:\s*\[(.*?)\]/s);
+          if (namesMatch) {
+            try {
+              const namesArray = JSON.parse(`[${namesMatch[1]}]`);
+              if (Array.isArray(namesArray) && namesArray.length) {
+                extractedNames = Array.from(new Set(namesArray.map((n: any) => String(n).trim()).filter(Boolean)));
+              }
+            } catch (_) {
+              // Not valid, ignore
+            }
+          }
+        }
+      }
+      
+      // Also try from accumulated streaming text if not found yet
+      if (!extractedNames.length && accumulatedStreamText) {
+        try {
+          const parsed = JSON.parse(accumulatedStreamText);
+          const names = parsed.names || parsed.name_suggestions || [];
+          if (Array.isArray(names) && names.length) {
+            extractedNames = Array.from(new Set(names.map((n: any) => String(n).trim()).filter(Boolean)));
+          }
+        } catch (_) {
+          // Try manual extraction from streaming text
+          const namesMatch = accumulatedStreamText.match(/"names"\s*:\s*\[(.*?)\]/s);
+          if (namesMatch) {
+            try {
+              const namesArray = JSON.parse(`[${namesMatch[1]}]`);
+              if (Array.isArray(namesArray) && namesArray.length) {
+                extractedNames = Array.from(new Set(namesArray.map((n: any) => String(n).trim()).filter(Boolean)));
+              }
+            } catch (_) {
+              // Not valid, ignore
+            }
+          }
+        }
+      }
+      
+      if (extractedNames.length) {
+        setNameSuggestions(extractedNames);
+        // If only one name, auto-select it
+        if (extractedNames.length === 1) {
+          setBrandName(extractedNames[0]);
         }
       }
 
@@ -1350,76 +1793,99 @@ export default function BrandMeNowWizard() {
     }
   };
 
-  // Suggest products (ProductAdvisor): stream + final JSON
-  const suggestProductsViaAgent = async () => {
+  // Suggest products via ProductSelector agent: stream + final message
+  const suggestProductsViaSelectorAgent = async (overridePrompt?: string, categoryOverride?: string): Promise<string> => {
     setProductAgentMessage("");
+    setProductSuggestions([]);
     setProductLoading(true);
+    setProductStreamingText("");
+    setProductFinalMessage("");
+    setProductScanSucceeded(false);
     try {
       const parts: string[] = [];
-      if (productUserPrompt?.trim()) parts.push(productUserPrompt.trim());
-      if (category?.trim()) parts.push(`category: ${category}`);
-      if (brandName?.trim()) parts.push(`brand: ${brandName}`);
+      const trimmedOverride = overridePrompt?.trim() ?? '';
+      const trimmedPrimary = productUserPrompt?.trim() ?? '';
+      const activePrompt = trimmedOverride || trimmedPrimary;
+      const activeCategoryId = categoryOverride || category;
+      const activeCategoryLabel = activeCategoryId 
+        ? Categories.find(c => c.id === activeCategoryId)?.label || activeCategoryId
+        : null;
+
+      if (activePrompt) parts.push(activePrompt);
+      if (activeCategoryLabel?.trim()) parts.push(`category: ${activeCategoryLabel}`);
       if (vibe?.trim()) parts.push(`vibe: ${vibe}`);
       if (industry?.trim()) parts.push(`industry: ${industry}`);
+      if (brandName?.trim()) parts.push(`brand: ${brandName}`);
+      if (paletteColors?.length) parts.push(`palette: ${paletteColors.join(', ')}`);
       const inputText = parts.join('. ');
+      const userDisplay = trimmedOverride || (activeCategoryLabel && !trimmedPrimary ? `category: ${activeCategoryLabel}` : inputText);
 
-      const chat_history: AgencyMessage[] = [
+      const nextHistory: AgencyMessage[] = [
         ...productChatHistory.map(m => ({ role: m.role as 'user' | 'assistant', content: m.text } as AgencyMessage)),
         { role: 'user', content: inputText }
       ];
 
-      const payload = {
-        recipient_agent: "ProductAdvisor",
-        message: inputText,
-        chat_history,
-        file_ids: null,
-        file_urls: null,
-        additional_instructions: null,
-      };
+      setProductChatHistory(prev => [...prev, { role: 'user', text: userDisplay }]);
 
-      setProductChatHistory(prev => [...prev, { role: 'user', text: inputText }]);
-      await streamAgencyRespond(payload, ({ type, message }) => {
-        if (type === 'delta') {
-          setProductAgentMessage(prev => prev ? `${prev}${message}` : message);
-        } else if (type === 'message') {
-          setProductAgentMessage(message || '');
-        }
+      const streamPayload = createProductSelectorPayload({
+        message: inputText,
+        chatHistory: nextHistory,
+        brandName,
+        industry,
+        vibe,
+        paletteHexes: paletteColors,
       });
 
-      const jr = await postAgencyRespond(payload);
-      const j = jr?.data ?? jr;
-      let agentText = extractMessageFromSSE(j?.message || j?.data?.message || '');
-      let parsedInner: any = null;
-      if (agentText && typeof agentText === 'string') {
-        try { parsedInner = JSON.parse(agentText); } catch(_) { parsedInner = null; }
-      } else if (typeof agentText === 'object' && agentText) {
-        parsedInner = agentText;
+      const { message: finalMessage, helpers } = await requestAgencyResponse({
+        payload: streamPayload,
+        onStream: (txt) => {
+          setProductStreamingText(txt);
+          setProductAgentMessage(txt);
+          setProductScanSucceeded(true);
+        },
+      });
+
+      if (finalMessage) {
+        setProductFinalMessage(finalMessage);
+        setProductAgentMessage(finalMessage);
+        setProductScanSucceeded(true);
+        setProductChatHistory(prev => [...prev, { role: 'assistant', text: finalMessage }]);
       }
-      if (parsedInner && parsedInner.message) {
-        agentText = parsedInner.message;
-      }
-      let suggestions: Array<{ sku: string; title: string; blurb: string; category: string }> = [];
-      if (parsedInner) {
-        suggestions = parsedInner.product_suggestions || parsedInner.suggestions || [];
-      }
-      if (!Array.isArray(suggestions) || !suggestions.length) {
-        suggestions = j?.product_suggestions || j?.data?.product_suggestions || [];
-      }
-      if (Array.isArray(suggestions) && suggestions.length) {
-        setProductSuggestions(suggestions.map((s:any) => ({
-          sku: String(s?.sku || ''),
-          title: String(s?.title || s?.name || 'Suggested Product'),
-          blurb: String(s?.blurb || s?.description || ''),
-          category: String(s?.category || category || ''),
-        })));
-      }
-      setProductAgentMessage(agentText || "");
-      setProductChatHistory(prev => [...prev, { role: 'assistant', text: agentText || 'Here are product ideas that fit your brand.' }]);
+
+      return finalMessage;
     } catch (e:any) {
-      setProductAgentMessage(e?.message || 'Failed to suggest products. Please try again.');
+      const msg = e?.message || 'Failed to suggest products. Please try again.';
+      setProductAgentMessage(msg);
+      setProductFinalMessage(msg);
+      return "";
     } finally {
       setProductLoading(false);
     }
+  };
+
+  const handleProductAnalyze = () => {
+    if (productLoading) return;
+    void suggestProductsViaSelectorAgent();
+  };
+
+  const handleCategorySelect = (categoryId: string) => {
+    setCategory(categoryId);
+    if (!productLoading) {
+      void suggestProductsViaSelectorAgent(undefined, categoryId);
+    }
+  };
+
+  const handleProductRefine = () => {
+    if (productLoading) return;
+    if (!productRefinePrompt.trim()) return;
+    void suggestProductsViaSelectorAgent(productRefinePrompt);
+    setProductRefinePrompt('');
+  };
+
+  const handleProductContinue = () => {
+    if (productLoading) return;
+    if (!productScanSucceeded) return;
+    setStep("loading6");
   };
 
   // Style preview (PreviewStylist): stream + final JSON
@@ -1730,6 +2196,44 @@ export default function BrandMeNowWizard() {
                   loading={nameLoading}
                   loadingText="Analyzing your naming preferences…"
                 />
+                
+                {/* Display name options above refinement */}
+                {nameSuggestions.length > 0 && (
+                  <div className="mt-6">
+                    {nameSuggestions.length === 1 ? (
+                      // Single name - show as final/selected name
+                      <div className="rounded-2xl border border-emerald-200 bg-emerald-50/80 p-4 shadow-sm">
+                        <div className="text-xs uppercase tracking-wide text-emerald-600 mb-1">Selected Name</div>
+                        <div className="text-lg font-semibold text-emerald-800">{nameSuggestions[0]}</div>
+                        <div className="mt-1 text-sm text-emerald-600">✓ Ready to proceed with this name</div>
+                      </div>
+                    ) : (
+                      // Multiple names - show as selectable cards
+                      <div>
+                        <div className="text-sm font-medium text-slate-700 mb-3">Available Names:</div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {nameSuggestions.map((name, idx) => (
+                            <button
+                              key={idx}
+                              onClick={() => setBrandName(name)}
+                              className={`rounded-xl border p-4 text-left transition ${
+                                brandName === name
+                                  ? 'border-[#1ae7f6] bg-[#1ae7f6]/10 ring-2 ring-[#1ae7f6]'
+                                  : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'
+                              }`}
+                            >
+                              <div className="font-medium text-slate-900">{name}</div>
+                              {brandName === name && (
+                                <div className="mt-1 text-xs text-[#1ae7f6]">✓ Selected</div>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                
                 {nameFinalMessage && (
                   <RefinementWidget
                     refinePrompt={nameRefinePrompt}
@@ -1762,7 +2266,7 @@ export default function BrandMeNowWizard() {
                       </>
                     )}
                   </button>
-                  <PrimaryButton onClick={handleNameContinue} disabled={!nameScanSucceeded || nameLoading}>Continue</PrimaryButton>
+                  <PrimaryButton onClick={handleNameContinue} disabled={!nameScanSucceeded || nameLoading || !brandName.trim()}>Continue</PrimaryButton>
                 </div>
               </div>
             </StepPanel>
@@ -1854,7 +2358,7 @@ export default function BrandMeNowWizard() {
               <AgentIntroWidget
                 introMessage={logoIntroMessage}
                 introError={logoIntroError}
-                loadingText="Preparing logo guidance…"
+                loadingText={logoIntroLoading ? "Preparing logo guidance…" : undefined}
               />
               <div className="mt-4 max-w-3xl mx-auto">
                 <label className="block text-sm font-medium text-gray-700 mb-1">logo details</label>
@@ -1913,19 +2417,14 @@ export default function BrandMeNowWizard() {
                   )}
                 </PrimaryButton>
               </div>
-              {(logoAgentMessage || logoLoading) && (
-                <div className="mt-6 max-w-3xl mx-auto">
-                  <div className="rounded-2xl border border-cyan-200 bg-cyan-50/80 p-4 shadow-sm">
-                    <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-cyan-600">
-                      <Sparkles className="h-4 w-4" />
-                      <span>Agent Response</span>
-                    </div>
-                    <div className="mt-2 text-sm text-cyan-800 whitespace-pre-line min-h-[48px]">
-                      {logoAgentMessage || (logoLoading ? 'Generating logo directions…' : '')}
-                    </div>
-                  </div>
-                </div>
-              )}
+              <div className="mt-6 max-w-3xl mx-auto">
+                <AgentMessageWidget
+                  streamingText={logoStreamingText}
+                  finalMessage={logoFinalMessage}
+                  loading={logoLoading}
+                  loadingText="Generating logo directions…"
+                />
+              </div>
               {/* Error handling: display user-facing errors without debug comments */}
               {logoError && (
                 <div className="mt-3 max-w-3xl mx-auto p-2 rounded-md bg-red-50 border border-red-200 text-sm text-red-700">
@@ -1951,6 +2450,18 @@ export default function BrandMeNowWizard() {
                   ))}
                 </div>
               )}
+              {logoFinalMessage && (
+                <div className="mt-6 max-w-3xl mx-auto">
+                  <RefinementWidget
+                    refinePrompt={logoRefinePrompt}
+                    onRefinePromptChange={setLogoRefinePrompt}
+                    onRefine={handleLogoRefine}
+                    loading={logoLoading}
+                    placeholder="Tell LogoGenerator how to adjust the logos (style, colors, typography, details)"
+                    refineButtonText="Refine Logos"
+                  />
+                </div>
+              )}
               <div className="mt-8 flex items-center justify-between">
                 <SecondaryButton onClick={()=>setStep("palette")}>Back</SecondaryButton>
                 <PrimaryButton onClick={()=>setStep("loading5")} disabled={!chosenLogo}>Continue</PrimaryButton>
@@ -1962,30 +2473,81 @@ export default function BrandMeNowWizard() {
 
           {step === "product" && (
             <StepPanel key="product">
-              <h2 className="text-2xl md:text-3xl font-semibold text-center">Product Selection</h2>
-              <p className="mt-2 text-center text-gray-600">Choose a category, then pick a SKU.</p>
-              <div className="mt-4 flex flex-wrap gap-2 justify-center">
-                {Categories.map(c => (
-                  <button key={c.id} onClick={()=>setCategory(c.id)} className={`rounded-full border px-3 py-1 text-sm ${category===c.id?"border-black":""}`}>{c.label}</button>
-                ))}
-              </div>
-              <div className="mt-6 grid md:grid-cols-2 gap-4">
-                {SKUs.filter(s=>s.category===category).map(p => (
-        <div key={p.sku} className={`rounded-2xl border p-4 ${sku===p.sku?"ring-2 ring-[#1ae7f6]":""}`}>
-                    <div className="font-medium">{p.title}</div>
-                    <div className="text-sm text-gray-500">{p.blurb}</div>
-                    <div className="pt-2"><button className="rounded-xl px-3 py-2 border" onClick={()=>setSku(p.sku)}>Select</button></div>
+              <h2 className="text-2xl md:text-3xl font-semibold text-center mt-4">Product Selection</h2>
+              <AgentIntroWidget
+                introMessage={productIntroMessage}
+                introError={productIntroError}
+                loadingText="Getting your product selection ready…"
+              />
+              <div className="mt-6 max-w-3xl mx-auto">
+                <div className="mb-4">
+                  <div className="text-sm font-medium text-slate-700 mb-2">Select a category:</div>
+                  <div className="flex flex-wrap gap-2 justify-center">
+                    {Categories.map(c => (
+                      <button
+                        key={c.id}
+                        onClick={() => handleCategorySelect(c.id)}
+                        disabled={productLoading}
+                        className={`rounded-full border px-4 py-2 text-sm font-medium transition ${
+                          category === c.id
+                            ? "border-black bg-slate-100 text-black"
+                            : "border-slate-300 hover:border-slate-400 text-slate-700"
+                        } disabled:cursor-not-allowed disabled:opacity-60`}
+                      >
+                        {c.label}
+                      </button>
+                    ))}
                   </div>
-                ))}
+                </div>
+                <StandardTextInput
+                  value={productUserPrompt}
+                  onChange={(v)=>setProductUserPrompt(v)}
+                  placeholder="Type your product preferences (e.g., 'high margin, eco-friendly packaging')"
+                  maxLength={200}
+                  multiline
+                  className="text-lg"
+                />
+                <p className="mt-2 text-center text-md text-slate-500">Tip: {tips[currentTipIndex].replace(/^Tip:\s*/i, '')}</p>
+                <AgentMessageWidget
+                  streamingText={productStreamingText}
+                  finalMessage={productFinalMessage}
+                  loading={productLoading}
+                  loadingText="Analyzing your product preferences…"
+                />
+                {productFinalMessage && (
+                  <RefinementWidget
+                    refinePrompt={productRefinePrompt}
+                    onRefinePromptChange={setProductRefinePrompt}
+                    onRefine={handleProductRefine}
+                    loading={productLoading}
+                    placeholder="Tell ProductSelector how to adjust the suggestions (category, features, style)"
+                    refineButtonText="Refine Products"
+                  />
+                )}
               </div>
-              <div className="mt-8 flex items-center justify-between">
+              <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
                 <SecondaryButton onClick={()=>setStep("logo")}>Back</SecondaryButton>
-                <PrimaryButton onClick={async()=>{
-                  if(!sku || !chosenLogo) return;
-                  const r = await MockAPI.preview({ sku, logo: chosenLogo });
-                  setPreviews(r.images);
-                  setStep("loading6");
-                }} disabled={!sku}>Continue</PrimaryButton>
+                <div className="flex flex-wrap gap-3 justify-end">
+                  <button
+                    type="button"
+                    onClick={handleProductAnalyze}
+                    disabled={productLoading || (!vibe.trim() && !industry.trim() && !brandName.trim())}
+                    className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {productLoading ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Analyzing…
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="mr-2 h-4 w-4" />
+                        Analyze Products
+                      </>
+                    )}
+                  </button>
+                  <PrimaryButton onClick={handleProductContinue} disabled={!productScanSucceeded || productLoading}>Continue</PrimaryButton>
+                </div>
               </div>
             </StepPanel>
           )}
@@ -2028,12 +2590,105 @@ export default function BrandMeNowWizard() {
               </div>
               <div className="mt-8 flex items-center justify-between">
                 <SecondaryButton onClick={()=>setStep("product")}>Back</SecondaryButton>
-                <PrimaryButton onClick={()=>setStep("loading7")}>Looks Good</PrimaryButton>
+                <PrimaryButton onClick={()=>setStep("loading9")}>Looks Good</PrimaryButton>
               </div>
             </StepPanel>
           )}
 
           {step === "loading7" && (<LoadingScreen key="loading7" title="Calculating profit" subtitle="Crunching your numbers…" />)}
+
+          {step === "loading9" && (<LoadingScreen key="loading9" title="Preparing mockup generation" subtitle="This can take a few seconds…" />)}
+
+          {step === "mockup" && (
+            <StepPanel key="mockup">
+              <h2 className="text-2xl md:text-3xl font-semibold text-center mt-4">Mockup Generation</h2>
+              <AgentIntroWidget
+                introMessage={mockupIntroMessage}
+                introError={mockupIntroError}
+                loadingText={mockupIntroLoading ? "Preparing mockup guidance…" : undefined}
+              />
+              <div className="mt-4 max-w-3xl mx-auto">
+                <label className="block text-sm font-medium text-gray-700 mb-1">mockup details</label>
+                <StandardTextInput
+                  value={mockupUserPrompt}
+                  onChange={(v)=>setMockupUserPrompt(v)}
+                  placeholder="mockup description"
+                  multiline
+                  maxLength={500}
+                  className="focus:ring-purple-400"
+                />
+              </div>
+              <div className="mt-4 grid md:grid-cols-1 gap-3 max-w-3xl mx-auto">
+                <div className="rounded-2xl border p-4">
+                  <div className="font-medium">Colors</div>
+                  <div className="mt-2 flex gap-2 items-center">
+                    {paletteColors.length ? paletteColors.map(c => (<div key={c} className="h-6 w-6 rounded" style={{background:c}}/>)) : <span className="text-sm text-gray-500">Use palette step above</span>}
+                  </div>
+                </div>
+              </div>
+              {mockupError && (
+                <div className="mt-3 max-w-3xl mx-auto p-2 rounded-md bg-red-50 border border-red-200 text-sm text-red-700">
+                  {mockupError}
+                </div>
+              )}
+              <div className="mt-4 flex justify-center gap-3">
+                <PrimaryButton onClick={async()=>{ await generateMockupOptionsViaAgent(3); }} disabled={mockupLoading || (!paletteColors || !paletteColors.length)}>
+                  {mockupLoading ? (
+                    <>
+                      <Loader2 className="ml-2 h-4 w-4 animate-spin"/> Generating…
+                    </>
+                  ) : (
+                    <>
+                      {mockupOptions.length > 0 ? 'Generate 3' : 'Generate'}
+                    </>
+                  )}
+                </PrimaryButton>
+              </div>
+              <div className="mt-6 max-w-3xl mx-auto">
+                <AgentMessageWidget
+                  streamingText={mockupStreamingText}
+                  finalMessage={mockupFinalMessage}
+                  loading={mockupLoading}
+                  loadingText="Generating mockup directions…"
+                />
+              </div>
+              {!!mockupOptions.length && (
+                <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {mockupOptions.map((src)=> (
+                    <div key={src} className={`rounded-xl border overflow-hidden hover:shadow-sm ${chosenMockup===src?"ring-2 ring-[#1ae7f6]":""}`}>
+                      <img src={src} alt="mockup" className="w-full h-auto" loading="lazy" decoding="async" fetchPriority="low" sizes="(max-width: 768px) 100vw, 1024px" />
+                      <div className="p-2 flex items-center justify-between">
+                        <button className="rounded-xl px-3 py-1 border inline-flex items-center gap-2" onClick={()=>setChosenMockup(src)}>
+                          <i className="fi fi-rr-check"></i>
+                          Use this
+                        </button>
+                        <button className="rounded-xl px-3 py-1 border inline-flex items-center gap-2" onClick={()=>downloadImage(src)}>
+                          <i className="fi fi-rr-download"></i>
+                          Download
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {mockupFinalMessage && (
+                <div className="mt-6 max-w-3xl mx-auto">
+                  <RefinementWidget
+                    refinePrompt={mockupRefinePrompt}
+                    onRefinePromptChange={setMockupRefinePrompt}
+                    onRefine={handleMockupRefine}
+                    loading={mockupLoading}
+                    placeholder="Tell MockupGenerator how to adjust the mockups (style, colors, details)"
+                    refineButtonText="Refine Mockups"
+                  />
+                </div>
+              )}
+              <div className="mt-8 flex items-center justify-between">
+                <SecondaryButton onClick={()=>setStep("preview")}>Back</SecondaryButton>
+                <PrimaryButton onClick={()=>setStep("loading7")} disabled={!chosenMockup}>Continue</PrimaryButton>
+              </div>
+            </StepPanel>
+          )}
 
           {step === "profit" && (
             <StepPanel key="profit">

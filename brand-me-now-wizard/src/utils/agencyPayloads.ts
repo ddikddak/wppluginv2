@@ -57,6 +57,46 @@ type LogoGeneratorPayloadArgs = {
   paletteHexes?: string[];
 };
 
+type ProductSelectorIntroArgs = {
+  brandName?: string;
+  industry?: string;
+  vibe?: string;
+  paletteHexes?: string[];
+};
+
+type ProductSelectorPayloadArgs = {
+  message: string;
+  chatHistory: AgencyMessage[];
+  brandName?: string;
+  industry?: string;
+  vibe?: string;
+  paletteHexes?: string[];
+};
+
+type MockupGeneratorMessageArgs = {
+  prompt?: string;
+  brandName?: string;
+  industry?: string;
+  vibe?: string;
+  paletteHexes?: string[];
+};
+
+type MockupGeneratorIntroArgs = {
+  brandName?: string;
+  industry?: string;
+  vibe?: string;
+  paletteHexes?: string[];
+};
+
+type MockupGeneratorPayloadArgs = {
+  message: string;
+  chatHistory: AgencyMessage[];
+  brandName?: string;
+  industry?: string;
+  vibe?: string;
+  paletteHexes?: string[];
+};
+
 type PaletteRefinementArgs = {
   prompt?: string;
   paletteHexes?: string[];
@@ -292,6 +332,155 @@ export function createLogoGeneratorPayload({ message, chatHistory, brandName, in
 
   return {
     recipient_agent: 'LogoGenerator',
+    message: message?.trim() ?? '',
+    chat_history: chatHistory,
+    context,
+    file_ids: null,
+    file_urls: null,
+    additional_instructions: null,
+  };
+}
+
+export function createProductSelectorIntroPayload({ brandName, industry, vibe, paletteHexes }: ProductSelectorIntroArgs): AgencyPayload {
+  const context: Record<string, string> = {};
+  const trimmedBrand = brandName?.trim();
+  const trimmedIndustry = industry?.trim();
+  const trimmedVibe = vibe?.trim();
+  const normalizedPalette = normalizeHexList(paletteHexes);
+
+  if (trimmedBrand) context.brandName = trimmedBrand;
+  if (trimmedIndustry) context.industry = trimmedIndustry;
+  if (trimmedVibe) context.vibe = trimmedVibe;
+  if (normalizedPalette.length) context.palette = normalizedPalette.join(', ');
+
+  const introParts = [
+    'You are the ProductSelector agent for an interactive branding wizard.',
+    'Greet the user warmly in one or two sentences and explain you will help them select the best product for their brand.',
+    'Mention that you can suggest products based on their brand name, industry, vibe, color palette, and other preferences.',
+    'Encourage the user to share any product preferences, constraints, or specific requirements.',
+  ];
+
+  if (trimmedBrand) introParts.push(`The brand name is ${trimmedBrand}.`);
+  if (trimmedIndustry) introParts.push(`The industry is ${trimmedIndustry}.`);
+  if (trimmedVibe) introParts.push(`The vibe is ${trimmedVibe}.`);
+  if (normalizedPalette.length) introParts.push(`The color palette includes: ${normalizedPalette.join(', ')}.`);
+
+  const message = introParts.join(' ');
+
+  return {
+    recipient_agent: 'ProductSelector',
+    message,
+    chat_history: [],
+    context,
+    file_ids: null,
+    file_urls: null,
+    additional_instructions: null,
+  };
+}
+
+export function createProductSelectorPayload({ message, chatHistory, brandName, industry, vibe, paletteHexes }: ProductSelectorPayloadArgs): AgencyPayload {
+  const context: Record<string, string> = {};
+  const trimmedBrand = brandName?.trim();
+  const trimmedIndustry = industry?.trim();
+  const trimmedVibe = vibe?.trim();
+  const normalizedPalette = normalizeHexList(paletteHexes);
+
+  if (trimmedBrand) context.brandName = trimmedBrand;
+  if (trimmedIndustry) context.industry = trimmedIndustry;
+  if (trimmedVibe) context.vibe = trimmedVibe;
+  if (normalizedPalette.length) context.palette = normalizedPalette.join(', ');
+
+  const baseMessage = message?.trim() ? message : 'Suggest products based on the provided context.';
+
+  return {
+    recipient_agent: 'ProductSelector',
+    message: baseMessage,
+    chat_history: chatHistory,
+    context,
+    file_ids: null,
+    file_urls: null,
+    additional_instructions: null,
+  };
+}
+
+export function composeMockupGeneratorMessage({ prompt, brandName, industry, vibe, paletteHexes }: MockupGeneratorMessageArgs): string {
+  const parts: string[] = [];
+
+  const trimmedPrompt = prompt?.trim();
+  const trimmedBrand = brandName?.trim();
+  const trimmedIndustry = industry?.trim();
+  const trimmedVibe = vibe?.trim();
+  const normalizedPalette = normalizeHexList(paletteHexes);
+
+  if (trimmedPrompt) parts.push(trimmedPrompt);
+
+  if (normalizedPalette.length) {
+    parts.push(`palette HEX: ${normalizedPalette.join(', ')}`);
+    const [primary, ...rest] = normalizedPalette;
+    if (primary) {
+      const secondaryText = rest.length ? rest.join(', ') : 'none';
+      parts.push(`PRIMARY emphasis: ${primary} with subtle accents: ${secondaryText}`);
+    }
+  }
+
+  if (trimmedBrand) parts.push(`brand: ${trimmedBrand}`);
+  if (trimmedIndustry) parts.push(`industry: ${trimmedIndustry}`);
+  if (trimmedVibe) parts.push(`vibe: ${trimmedVibe}`);
+
+  return parts.join('. ').trim();
+}
+
+export function createMockupGeneratorIntroPayload({ brandName, industry, vibe, paletteHexes }: MockupGeneratorIntroArgs): AgencyPayload {
+  const context: Record<string, string> = {};
+  const trimmedBrand = brandName?.trim();
+  const trimmedIndustry = industry?.trim();
+  const trimmedVibe = vibe?.trim();
+  const normalizedPalette = normalizeHexList(paletteHexes);
+
+  if (trimmedBrand) context.brandName = trimmedBrand;
+  if (trimmedIndustry) context.industry = trimmedIndustry;
+  if (trimmedVibe) context.vibe = trimmedVibe;
+  if (normalizedPalette.length) context.palette = normalizedPalette.join(', ');
+
+  const introParts = [
+    'You are the MockupGenerator agent for an interactive branding wizard.',
+    'Greet the user warmly in one or two sentences and explain you will help generate mockup images.',
+    'Emphasize that the mockups will follow the selected color palette and overall brand direction.',
+    'Encourage the user to share style cues or preferences before you generate the first batch of mockups.',
+  ];
+
+  if (trimmedBrand) introParts.push(`The brand name is ${trimmedBrand}.`);
+  if (trimmedIndustry) introParts.push(`The industry is ${trimmedIndustry}.`);
+  if (trimmedVibe) introParts.push(`The vibe is ${trimmedVibe}.`);
+  if (normalizedPalette.length) introParts.push(`The color palette includes: ${normalizedPalette.join(', ')}.`);
+
+  const message = introParts.join(' ');
+
+  return {
+    recipient_agent: 'MockupGenerator',
+    message,
+    chat_history: [],
+    context,
+    file_ids: null,
+    file_urls: null,
+    additional_instructions: null,
+  };
+}
+
+export function createMockupGeneratorPayload({ message, chatHistory, brandName, industry, vibe, paletteHexes }: MockupGeneratorPayloadArgs): AgencyPayload {
+  const context: Record<string, string> = {};
+  const trimmedBrand = brandName?.trim();
+  const trimmedIndustry = industry?.trim();
+  const trimmedVibe = vibe?.trim();
+  const normalizedPalette = normalizeHexList(paletteHexes);
+
+  if (trimmedBrand) context.brandName = trimmedBrand;
+  if (trimmedIndustry) context.industry = trimmedIndustry;
+  if (trimmedVibe) context.vibe = trimmedVibe;
+  if (normalizedPalette.length) context.palette = normalizedPalette.join(', ');
+
+  return {
+    recipient_agent: 'MockupGenerator',
     message: message?.trim() ?? '',
     chat_history: chatHistory,
     context,
